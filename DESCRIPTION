@@ -1,6 +1,6 @@
 Package: rwetools
 Title: Estimating Propensity Scores (PS), PS-Based Weights, and Effects
-Version: 0.1.2
+Version: 0.2.0
 Authors@R: 
   c(
   person("Hanseul", "Cho", email="hanseul0618@gmail.com", role = c("aut", "cre")),
@@ -30,7 +30,7 @@ Suggests: openxlsx, ggplot2, MatchIt, testthat (>= 3.0.0)
 URL: https://github.com/hanseul0618/rwetools
 Config/testthat/edition: 3
 NeedsCompilation: no
-Packaged: 2026-05-22 02:23:19 UTC; hanse
+Packaged: 2026-06-21 22:43:39 UTC; hanse
 Author: Hanseul Cho [aut, cre],
   Georg Hahn [aut],
   Janinne Ortega-Montiel [aut],
@@ -38,4 +38,4 @@ Author: Hanseul Cho [aut, cre],
   Elisabetta Patorno [aut]
 Maintainer: Hanseul Cho <hanseul0618@gmail.com>
 Repository: CRAN
-Date/Publication: 2026-05-28 13:30:02 UTC
+Date/Publication: 2026-06-21 23:00:02 UTC

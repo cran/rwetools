@@ -603,7 +603,24 @@ create_ps_weights <- function(
         
         ggplot2::ggsave(file.path(out_dir_plots, "weight_distribution_boxplot.png"),
                         plot = p_weight_box, width = 8, height = 6, dpi = 150)
-        
+
+        # Unified FS-style PS distribution plots (shared helper; in addition to
+        # the faceted plots above). See .plot_ps_distribution_set().
+        plot_prefix <- if (!is.null(out_xlsxpath_report)) {
+          gsub("_diagnostic$", "", sub("\\.[^.]*$", "", basename(out_xlsxpath_report)))
+        } else {
+          "ps_weights"
+        }
+        fs_plot_df <- data.frame(ps = ps, exposure01 = exp, wt_col = weights)
+        .plot_ps_distribution_set(
+          crude_df = fs_plot_df, weighted_df = fs_plot_df,
+          ps_var = "ps", exposure_var = "exposure01", weight_var = "wt_col",
+          out_dir_plots = out_dir_plots, plot_prefix = plot_prefix,
+          unwt_title = "Unweighted PS Distribution",
+          wt_title   = "Weighted PS Distribution",
+          box_title  = "Distribution of Propensity Score Weights",
+          make_boxplot = TRUE, verbose = verbose)
+
         # Plot 4: Balance/Love Plot (only if Table 1 was generated)
         if (make_unwt_wt_table1 && exists("balance_comparison")) {
           balance_plot_data <- balance_comparison[!is.na(balance_comparison$Crude_Std_Diff) & 
@@ -845,7 +862,19 @@ check_ps_assumptions_internal <- function(data, ps_var, exposure, verbose = TRUE
 #' @param ref_value Value representing the reference/control group (default: 0)
 #' @param ps_var Character string. Name of the PS variable column in the data (default: "ps")
 #' @param ratio Integer. Matching ratio (1:k). Default is 1 for 1:1 matching.
-#' @param caliper Numeric. Caliper width in standard deviations of logit(PS). Default is 0.2.
+#' @param caliper Numeric. Caliper width on the scale set by `caliper_scale`.
+#'   Default is 0.2 (i.e. 0.2 x SD of logit(PS) under the default scale - the
+#'   Austin (2011) convention).
+#' @param caliper_scale Character. Scale on which matching and the caliper are
+#'   applied. One of:
+#'   \itemize{
+#'     \item `"logit_ps_sd"` (default): match on logit(PS); caliper =
+#'       `caliper` x SD(logit(PS)). Requires PS strictly within (0, 1).
+#'     \item `"raw_ps_sd"`: match on PS; caliper = `caliper` x SD(PS). This is
+#'       the behavior of rwetools <= 0.1.x.
+#'     \item `"raw"`: match on PS; flat caliper of `caliper` on the raw PS scale
+#'       (e.g. `caliper = 0.01`).
+#'   }
 #' @param replace Logical. Whether to match with replacement. Default is FALSE.
 #' @param make_crude_matched_table1 Logical. Whether to generate crude and matched Table 1 (default: FALSE).
 #' @param table1_cont_vars Character vector. Names of continuous variables for Table 1 (optional, auto-detected if NULL)
@@ -906,6 +935,7 @@ create_ps_matched_cohort <- function(
     ps_var = "ps",
     ratio = 1,
     caliper = 0.2,
+    caliper_scale = c("logit_ps_sd", "raw", "raw_ps_sd"),
     replace = FALSE,
     make_crude_matched_table1 = FALSE,
     table1_cont_vars = NULL,
@@ -933,6 +963,7 @@ create_ps_matched_cohort <- function(
   if (!is.numeric(caliper) || length(caliper) != 1 || caliper <= 0) {
     stop("caliper must be a single positive number")
   }
+  caliper_scale <- match.arg(caliper_scale)
   if (exp_value == ref_value) {
     stop("exp_value and ref_value must be different")
   }
@@ -1029,7 +1060,27 @@ create_ps_matched_cohort <- function(
   if (verbose) message("----------------------------------------")
   if (verbose) message(sprintf("Method: Nearest Neighbor Matching"))
   if (verbose) message(sprintf("Ratio: 1:%d", ratio))
-  if (verbose) message(sprintf("Caliper: %.2f SD of logit(PS)", caliper))
+  # Resolve caliper scale -> matching distance + std.caliper flag (see caliper_scale).
+  if (caliper_scale == "logit_ps_sd") {
+    ps_rng <- range(data_work[[ps_var]], na.rm = TRUE)
+    if (ps_rng[1] <= 0 || ps_rng[2] >= 1) {
+      stop("caliper_scale = 'logit_ps_sd' requires propensity scores strictly within (0, 1) ",
+           "(logit is undefined at 0/1). Use caliper_scale = 'raw' or 'raw_ps_sd', ",
+           "or clamp the PS away from 0/1.")
+    }
+    match_distance  <- stats::qlogis(data_work[[ps_var]])   # logit(PS)
+    use_std_caliper <- TRUE
+    caliper_desc    <- sprintf("%.3f x SD of logit(PS)", caliper)
+  } else if (caliper_scale == "raw_ps_sd") {
+    match_distance  <- data_work[[ps_var]]                  # raw PS
+    use_std_caliper <- TRUE
+    caliper_desc    <- sprintf("%.3f x SD of PS", caliper)
+  } else {  # "raw"
+    match_distance  <- data_work[[ps_var]]                  # raw PS
+    use_std_caliper <- FALSE
+    caliper_desc    <- sprintf("%.3f (flat, raw PS scale)", caliper)
+  }
+  if (verbose) message(sprintf("Caliper: %s", caliper_desc))
   if (verbose) message(sprintf("With replacement: %s", ifelse(replace, "Yes", "No")))
   if (verbose) message(sprintf("Estimand: ATT (Average Treatment Effect on Treated)"))
   
@@ -1041,10 +1092,10 @@ create_ps_matched_cohort <- function(
     formula = match_formula,
     data = data_work,
     method = "nearest",
-    distance = data_work[[ps_var]],  # Use pre-computed PS
+    distance = match_distance,  # PS or logit(PS) per caliper_scale
     ratio = ratio,
     caliper = caliper,
-    std.caliper = TRUE,  # Caliper in SD units of logit(PS)
+    std.caliper = use_std_caliper,
     replace = replace,
     estimand = "ATT"
   )
@@ -1182,7 +1233,7 @@ create_ps_matched_cohort <- function(
       Metric = c(
         "Matching Method",
         "Ratio",
-        "Caliper (SD of logit PS)",
+        "Caliper",
         "With Replacement",
         "Estimand",
         "",
@@ -1204,7 +1255,7 @@ create_ps_matched_cohort <- function(
       Value = c(
         "Nearest Neighbor",
         sprintf("1:%d", ratio),
-        sprintf("%.2f", caliper),
+        caliper_desc,
         ifelse(replace, "Yes", "No"),
         "ATT",
         "",
@@ -1459,7 +1510,25 @@ create_ps_matched_cohort <- function(
         
         ggplot2::ggsave(file.path(out_dir_plots, "ps_distribution_post_mirror.png"),
                         plot = p_ps_mirror_post, width = 10, height = 6, dpi = 150)
-        
+
+        # Unified FS-style PS distribution plots (shared helper; in addition to
+        # the comparison/mirror plots above). Panel 1 = pre-matching cohort,
+        # panel 2 = matched cohort (each retained subject has weight 1, so no
+        # weight box plot). See .plot_ps_distribution_set().
+        plot_prefix <- if (!is.null(out_xlsxpath_report)) {
+          gsub("_diagnostic$", "", sub("\\.[^.]*$", "", basename(out_xlsxpath_report)))
+        } else {
+          "ps_matched"
+        }
+        .plot_ps_distribution_set(
+          crude_df = data_work, weighted_df = matched_cohort,
+          ps_var = ps_var, exposure_var = ".treat", weight_var = NULL,
+          out_dir_plots = out_dir_plots, plot_prefix = plot_prefix,
+          unwt_title = "Pre-matching PS Distribution",
+          wt_title   = "Post-matching PS Distribution",
+          panel1_suffix = "prematch", panel2_suffix = "postmatch",
+          make_boxplot = FALSE, verbose = verbose)
+
         # Plot 4: Balance/Love Plot (only if Table 1 was generated)
         if (make_crude_matched_table1 && exists("balance_comparison")) {
           balance_plot_data <- balance_comparison[!is.na(balance_comparison$Crude_Std_Diff) & 
@@ -2058,110 +2127,16 @@ create_ps_fs_weights <- function(
       "ps_fs"
     }
     
-    # Colour palette
-    fill_vals  <- c("0" = "#e41a1c", "1" = "#377eb8")
-    fill_labs  <- c("0" = "Reference", "1" = "Exposure")
-    
-    # Unweighted data 
-    if (verbose) message("  Creating unweighted PS distribution plots...")
-    unwt_data <- in_crude
-    unwt_data$exposure_factor <- factor(unwt_data[[exposure_var]], levels = c(0, 1), labels = c("0", "1"))
-    
-    # 6a. Unweighted density
-    p <- ggplot2::ggplot(unwt_data, ggplot2::aes(x = .data[[ps_var]], fill = exposure_factor, color = exposure_factor)) +
-      ggplot2::geom_density(alpha = 0.3, adjust = 1.5) +
-      ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
-      ggplot2::scale_color_manual(values = fill_vals, labels = fill_labs) +
-      ggplot2::labs(title = "Unweighted PS Distribution - Density", x = "PS", y = "Density") +
-      ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
-                                                legend.position = "top") + ggplot2::xlim(0, 1)
-    ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_density_unwt.png")),
-                    plot = p, width = 8, height = 6, dpi = 150)
-    
-    # 6b. Unweighted histogram
-    p <- ggplot2::ggplot(unwt_data, ggplot2::aes(x = .data[[ps_var]],
-                                                 y = ggplot2::after_stat(count / tapply(count, group, sum)[group] * 100),
-                                                 fill = exposure_factor)) +
-      ggplot2::geom_histogram(alpha = 0.5, position = "identity", bins = 100) +
-      ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
-      ggplot2::labs(title = "Unweighted PS Distribution - Histogram", x = "PS", y = "% patients (within group)") +
-      ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
-                                                legend.position = "top") + ggplot2::xlim(0, 1)
-    ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_histog_unwt.png")),
-                    plot = p, width = 8, height = 6, dpi = 150)
-    
-    # 6c. Unweighted both
-    p <- ggplot2::ggplot(unwt_data, ggplot2::aes(x = .data[[ps_var]])) +
-      ggplot2::geom_histogram(ggplot2::aes(y = ggplot2::after_stat(density), fill = exposure_factor),
-                              alpha = 0.5, position = "identity", bins = 100) +
-      ggplot2::geom_density(ggplot2::aes(y = ggplot2::after_stat(density), color = exposure_factor), linewidth = 1.2, adjust = 1.5) +
-      ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
-      ggplot2::scale_color_manual(values = fill_vals, labels = fill_labs, guide = "none") +
-      ggplot2::labs(title = "Unweighted PS Distribution", x = "PS", y = "Density") +
-      ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
-                                                legend.position = "top") + ggplot2::xlim(0, 1)
-    ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_unwt.png")),
-                    plot = p, width = 8, height = 6, dpi = 150)
-    
-    # Weighted data 
-    if (verbose) message("  Creating weighted PS distribution plots...")
-    wt_data <- final_data
-    wt_data$exposure_factor <- factor(wt_data[[exposure_var]], levels = c(0, 1), labels = c("0", "1"))
-    
-    # 6d. Weighted density
-    p <- ggplot2::ggplot(wt_data, ggplot2::aes(x = .data[[ps_var]], weight = .data[[weight_var]],
-                                               fill = exposure_factor, color = exposure_factor)) +
-      ggplot2::geom_density(alpha = 0.3, adjust = 1.5) +
-      ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
-      ggplot2::scale_color_manual(values = fill_vals, labels = fill_labs) +
-      ggplot2::labs(title = "Weighted PS Distribution - Density", x = "PS", y = "Density") +
-      ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
-                                                legend.position = "top") + ggplot2::xlim(0, 1)
-    ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_density_wt.png")),
-                    plot = p, width = 8, height = 6, dpi = 150)
-    
-    # 6e. Weighted histogram
-    p <- ggplot2::ggplot(wt_data, ggplot2::aes(x = .data[[ps_var]], weight = .data[[weight_var]],
-                                               fill = exposure_factor)) +
-      ggplot2::geom_histogram(ggplot2::aes(y = ggplot2::after_stat(count / tapply(count, group, sum)[group] * 100)),
-                              alpha = 0.5, position = "identity", bins = 100) +
-      ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
-      ggplot2::labs(title = "Weighted PS Distribution - Histogram", x = "PS", y = "% patients (within group)") +
-      ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
-                                                legend.position = "top") + ggplot2::xlim(0, 1)
-    ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_histog_wt.png")),
-                    plot = p, width = 8, height = 6, dpi = 150)
-    
-    # 6f. Weighted both
-    p <- ggplot2::ggplot(wt_data, ggplot2::aes(x = .data[[ps_var]], weight = .data[[weight_var]])) +
-      ggplot2::geom_histogram(ggplot2::aes(y = ggplot2::after_stat(density), fill = exposure_factor),
-                              alpha = 0.5, position = "identity", bins = 100) +
-      ggplot2::geom_density(ggplot2::aes(y = ggplot2::after_stat(density), color = exposure_factor), linewidth = 1.2, adjust = 1.5) +
-      ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
-      ggplot2::scale_color_manual(values = fill_vals, labels = fill_labs, guide = "none") +
-      ggplot2::labs(title = "Weighted PS Distribution", x = "PS", y = "Density") +
-      ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
-                                                legend.position = "top") + ggplot2::xlim(0, 1)
-    ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_wt.png")),
-                    plot = p, width = 8, height = 6, dpi = 150)
-    
-    # 6g. Weight distribution box plot
-    if (verbose) message("  Creating weight distribution box plot...")
-    box_data <- final_data
-    box_data$exposure_group <- factor(box_data[[exposure_var]], levels = c(0, 1),
-                                      labels = c("Reference", "Exposure"))
-    y_limit <- stats::quantile(final_data[[weight_var]], 0.99, na.rm = TRUE) * 1.1
-    
-    p <- ggplot2::ggplot(box_data, ggplot2::aes(x = exposure_group, y = .data[[weight_var]], fill = exposure_group)) +
-      ggplot2::geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
-      ggplot2::geom_hline(yintercept = 1, linetype = "dashed", color = "gray50", linewidth = 1) +
-      ggplot2::labs(title = "Distribution of Fine Stratification Weights", x = "Group", y = "Weight") +
-      ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
-                                                legend.position = "none") +
-      ggplot2::scale_fill_manual(values = c("Exposure" = "#377eb8", "Reference" = "#e41a1c")) +
-      ggplot2::coord_cartesian(ylim = c(0, y_limit))
-    ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_boxplot.png")),
-                    plot = p, width = 8, height = 6, dpi = 150)
+    # Unified FS-style PS distribution plots (shared helper; see
+    # .plot_ps_distribution_set in helpers_ps_psweights.R)
+    .plot_ps_distribution_set(
+      crude_df = in_crude, weighted_df = final_data,
+      ps_var = ps_var, exposure_var = exposure_var, weight_var = weight_var,
+      out_dir_plots = out_dir_plots, plot_prefix = plot_prefix,
+      unwt_title = "Unweighted PS Distribution",
+      wt_title   = "Weighted PS Distribution",
+      box_title  = "Distribution of Fine Stratification Weights",
+      make_boxplot = TRUE, verbose = verbose)
     
     # 6h. Balance plot (Love plot) - only if table1 was created
     if (make_unwt_wt_table1 && !is.null(combined_table)) {

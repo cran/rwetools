@@ -169,3 +169,177 @@ create_love_plot <- function(variable_names, crude_std_diff, adjusted_std_diff,
   ggplot2::ggsave(output_path, plot = p, width = 10, height = plot_height, dpi = 150)
   invisible(p)
 }
+
+#### Emit the unified FS-style PS-distribution plot set #####
+#' Emit the unified propensity-score distribution diagnostic plot set
+#'
+#' Internal helper that renders the standard rwetools propensity-score (PS)
+#' distribution figures - a density plot, a within-group histogram, and a
+#' histogram+density overlay - for a "panel 1" (unweighted / pre) sample and a
+#' "panel 2" (weighted / post) sample, plus an optional weight box plot. Shared
+#' by [create_ps_weights()], [create_ps_matched_cohort()], and
+#' [create_ps_fs_weights()] so that all three emit a consistent figure style.
+#'
+#' Exposure groups are coloured red (\code{"Reference"}, exposure 0) and blue
+#' (\code{"Exposure"}, exposure 1).
+#'
+#' @param crude_df data.frame for panel 1 (unweighted / pre). Must contain
+#'   \code{ps_var} and a 0/1 \code{exposure_var} column.
+#' @param weighted_df data.frame for panel 2 (weighted / post). Must contain the
+#'   same columns and, when \code{weight_var} is supplied, the weight column.
+#' @param ps_var Character. Name of the propensity-score column.
+#' @param exposure_var Character. Name of the 0/1 exposure column.
+#' @param weight_var Character or \code{NULL}. Weight column in
+#'   \code{weighted_df}. When \code{NULL}, the panel-2 plots are drawn as
+#'   unweighted counts of \code{weighted_df} (e.g. a matched subset, where each
+#'   retained subject carries weight 1) and the box plot is skipped.
+#' @param out_dir_plots Character. Output directory (created if needed).
+#' @param plot_prefix Character. File-name prefix for the saved PNGs.
+#' @param unwt_title,wt_title Character. Title stems for panel 1 / panel 2. The
+#'   density and histogram variants append \code{" - Density"} /
+#'   \code{" - Histogram"}.
+#' @param box_title Character. Title for the weight box plot.
+#' @param panel1_suffix,panel2_suffix Character. File-name tokens for the two
+#'   panels (default \code{"unwt"} / \code{"wt"}).
+#' @param make_boxplot Logical. Draw the weight box plot? (ignored when
+#'   \code{weight_var} is \code{NULL}).
+#' @param verbose Logical. Print progress messages (default \code{FALSE}).
+#' @return Invisibly \code{NULL}. Called for the PNG files written under
+#'   \code{out_dir_plots}.
+#' @keywords internal
+.plot_ps_distribution_set <- function(crude_df, weighted_df, ps_var, exposure_var,
+                                      weight_var = NULL, out_dir_plots, plot_prefix,
+                                      unwt_title = "Unweighted PS Distribution",
+                                      wt_title   = "Weighted PS Distribution",
+                                      box_title  = "Distribution of Propensity Score Weights",
+                                      panel1_suffix = "unwt", panel2_suffix = "wt",
+                                      make_boxplot = TRUE, verbose = FALSE) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    warning("Package 'ggplot2' is required for plots. Skipping plot generation.")
+    return(invisible(NULL))
+  }
+  if (!dir.exists(out_dir_plots)) dir.create(out_dir_plots, recursive = TRUE)
+
+  # Colour palette
+  fill_vals  <- c("0" = "#e41a1c", "1" = "#377eb8")
+  fill_labs  <- c("0" = "Reference", "1" = "Exposure")
+
+  # ---- Panel 1: unweighted / pre ----
+  if (verbose) message("  Creating panel-1 PS distribution plots...")
+  unwt_data <- crude_df
+  unwt_data$exposure_factor <- factor(unwt_data[[exposure_var]], levels = c(0, 1), labels = c("0", "1"))
+
+  # density
+  p <- ggplot2::ggplot(unwt_data, ggplot2::aes(x = .data[[ps_var]], fill = exposure_factor, color = exposure_factor)) +
+    ggplot2::geom_density(alpha = 0.3, adjust = 1.5) +
+    ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
+    ggplot2::scale_color_manual(values = fill_vals, labels = fill_labs) +
+    ggplot2::labs(title = paste0(unwt_title, " - Density"), x = "PS", y = "Density") +
+    ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
+                                              legend.position = "top") + ggplot2::xlim(0, 1)
+  ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_density_", panel1_suffix, ".png")),
+                  plot = p, width = 8, height = 6, dpi = 150)
+
+  # histogram
+  p <- ggplot2::ggplot(unwt_data, ggplot2::aes(x = .data[[ps_var]],
+                                               y = ggplot2::after_stat(count / tapply(count, group, sum)[group] * 100),
+                                               fill = exposure_factor)) +
+    ggplot2::geom_histogram(alpha = 0.5, position = "identity", bins = 100) +
+    ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
+    ggplot2::labs(title = paste0(unwt_title, " - Histogram"), x = "PS", y = "% patients (within group)") +
+    ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
+                                              legend.position = "top") + ggplot2::xlim(0, 1)
+  ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_histog_", panel1_suffix, ".png")),
+                  plot = p, width = 8, height = 6, dpi = 150)
+
+  # both
+  p <- ggplot2::ggplot(unwt_data, ggplot2::aes(x = .data[[ps_var]])) +
+    ggplot2::geom_histogram(ggplot2::aes(y = ggplot2::after_stat(density), fill = exposure_factor),
+                            alpha = 0.5, position = "identity", bins = 100) +
+    ggplot2::geom_density(ggplot2::aes(y = ggplot2::after_stat(density), color = exposure_factor), linewidth = 1.2, adjust = 1.5) +
+    ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
+    ggplot2::scale_color_manual(values = fill_vals, labels = fill_labs, guide = "none") +
+    ggplot2::labs(title = unwt_title, x = "PS", y = "Density") +
+    ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
+                                              legend.position = "top") + ggplot2::xlim(0, 1)
+  ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_", panel1_suffix, ".png")),
+                  plot = p, width = 8, height = 6, dpi = 150)
+
+  # ---- Panel 2: weighted / post ----
+  if (verbose) message("  Creating panel-2 PS distribution plots...")
+  wt_data <- weighted_df
+  wt_data$exposure_factor <- factor(wt_data[[exposure_var]], levels = c(0, 1), labels = c("0", "1"))
+  has_w <- !is.null(weight_var)
+
+  # density
+  aes_density <- if (has_w) {
+    ggplot2::aes(x = .data[[ps_var]], weight = .data[[weight_var]], fill = exposure_factor, color = exposure_factor)
+  } else {
+    ggplot2::aes(x = .data[[ps_var]], fill = exposure_factor, color = exposure_factor)
+  }
+  p <- ggplot2::ggplot(wt_data, aes_density) +
+    ggplot2::geom_density(alpha = 0.3, adjust = 1.5) +
+    ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
+    ggplot2::scale_color_manual(values = fill_vals, labels = fill_labs) +
+    ggplot2::labs(title = paste0(wt_title, " - Density"), x = "PS", y = "Density") +
+    ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
+                                              legend.position = "top") + ggplot2::xlim(0, 1)
+  ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_density_", panel2_suffix, ".png")),
+                  plot = p, width = 8, height = 6, dpi = 150)
+
+  # histogram
+  aes_histog <- if (has_w) {
+    ggplot2::aes(x = .data[[ps_var]], weight = .data[[weight_var]], fill = exposure_factor)
+  } else {
+    ggplot2::aes(x = .data[[ps_var]], fill = exposure_factor)
+  }
+  p <- ggplot2::ggplot(wt_data, aes_histog) +
+    ggplot2::geom_histogram(ggplot2::aes(y = ggplot2::after_stat(count / tapply(count, group, sum)[group] * 100)),
+                            alpha = 0.5, position = "identity", bins = 100) +
+    ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
+    ggplot2::labs(title = paste0(wt_title, " - Histogram"), x = "PS", y = "% patients (within group)") +
+    ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
+                                              legend.position = "top") + ggplot2::xlim(0, 1)
+  ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_histog_", panel2_suffix, ".png")),
+                  plot = p, width = 8, height = 6, dpi = 150)
+
+  # both
+  aes_both <- if (has_w) {
+    ggplot2::aes(x = .data[[ps_var]], weight = .data[[weight_var]])
+  } else {
+    ggplot2::aes(x = .data[[ps_var]])
+  }
+  p <- ggplot2::ggplot(wt_data, aes_both) +
+    ggplot2::geom_histogram(ggplot2::aes(y = ggplot2::after_stat(density), fill = exposure_factor),
+                            alpha = 0.5, position = "identity", bins = 100) +
+    ggplot2::geom_density(ggplot2::aes(y = ggplot2::after_stat(density), color = exposure_factor), linewidth = 1.2, adjust = 1.5) +
+    ggplot2::scale_fill_manual(values = fill_vals, labels = fill_labs) +
+    ggplot2::scale_color_manual(values = fill_vals, labels = fill_labs, guide = "none") +
+    ggplot2::labs(title = wt_title, x = "PS", y = "Density") +
+    ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
+                                              legend.position = "top") + ggplot2::xlim(0, 1)
+  ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_ps_distr_", panel2_suffix, ".png")),
+                  plot = p, width = 8, height = 6, dpi = 150)
+
+  # ---- Weight box plot (panel 2 weights only) ----
+  if (make_boxplot && has_w) {
+    if (verbose) message("  Creating weight distribution box plot...")
+    box_data <- weighted_df
+    box_data$exposure_group <- factor(box_data[[exposure_var]], levels = c(0, 1),
+                                      labels = c("Reference", "Exposure"))
+    y_limit <- stats::quantile(weighted_df[[weight_var]], 0.99, na.rm = TRUE) * 1.1
+
+    p <- ggplot2::ggplot(box_data, ggplot2::aes(x = exposure_group, y = .data[[weight_var]], fill = exposure_group)) +
+      ggplot2::geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
+      ggplot2::geom_hline(yintercept = 1, linetype = "dashed", color = "gray50", linewidth = 1) +
+      ggplot2::labs(title = box_title, x = "Group", y = "Weight") +
+      ggplot2::theme_minimal() + ggplot2::theme(plot.title = ggplot2::element_text(size = 14, face = "bold", hjust = 0.5),
+                                                legend.position = "none") +
+      ggplot2::scale_fill_manual(values = c("Exposure" = "#377eb8", "Reference" = "#e41a1c")) +
+      ggplot2::coord_cartesian(ylim = c(0, y_limit))
+    ggplot2::ggsave(file.path(out_dir_plots, paste0(plot_prefix, "_boxplot.png")),
+                    plot = p, width = 8, height = 6, dpi = 150)
+  }
+
+  invisible(NULL)
+}

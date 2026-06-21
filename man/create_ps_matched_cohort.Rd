@@ -17,6 +17,7 @@ create_ps_matched_cohort(
   ps_var = "ps",
   ratio = 1,
   caliper = 0.2,
+  caliper_scale = c("logit_ps_sd", "raw", "raw_ps_sd"),
   replace = FALSE,
   make_crude_matched_table1 = FALSE,
   table1_cont_vars = NULL,
@@ -50,7 +51,20 @@ create_ps_matched_cohort(
 
 \item{ratio}{Integer. Matching ratio (1:k). Default is 1 for 1:1 matching.}
 
-\item{caliper}{Numeric. Caliper width in standard deviations of logit(PS). Default is 0.2.}
+\item{caliper}{Numeric. Caliper width on the scale set by \code{caliper_scale}.
+Default is 0.2 (i.e. 0.2 x SD of logit(PS) under the default scale - the
+Austin (2011) convention).}
+
+\item{caliper_scale}{Character. Scale on which matching and the caliper are
+applied. One of:
+\itemize{
+\item \code{"logit_ps_sd"} (default): match on logit(PS); caliper =
+\code{caliper} x SD(logit(PS)). Requires PS strictly within (0, 1).
+\item \code{"raw_ps_sd"}: match on PS; caliper = \code{caliper} x SD(PS). This is
+the behavior of rwetools <= 0.1.x.
+\item \code{"raw"}: match on PS; flat caliper of \code{caliper} on the raw PS scale
+(e.g. \code{caliper = 0.01}).
+}}
 
 \item{replace}{Logical. Whether to match with replacement. Default is FALSE.}
 

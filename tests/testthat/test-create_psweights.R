@@ -89,3 +89,23 @@ test_that("create_ps_weights errors when no data provided", {
     "Either in_df or in_csvpath"
   )
 })
+
+test_that("create_ps_weights emits FS-style distribution plots", {
+  skip_if_not_installed("ggplot2")
+  skip_if_not_installed("openxlsx")
+  d <- file.path(tempdir(), "rwetools_wt_plots")
+  dir.create(d, showWarnings = FALSE)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  suppressWarnings(create_ps_weights(
+    in_df = ps_df, exposure_var = "exposure", ps_var = "ps", weight_method = "mw",
+    weight_var = "mw_wt", out_dir_plots = d,
+    out_xlsxpath_report = file.path(d, "rep.xlsx"), verbose = FALSE))
+  # legacy faceted plots retained
+  expect_true(file.exists(file.path(d, "ps_distribution_unweighted.png")))
+  expect_true(file.exists(file.path(d, "ps_distribution_weighted.png")))
+  # new unified FS-style set
+  expect_true(file.exists(file.path(d, "rep_ps_distr_unwt.png")))
+  expect_true(file.exists(file.path(d, "rep_ps_distr_wt.png")))
+  expect_true(file.exists(file.path(d, "rep_ps_distr_density_wt.png")))
+  expect_true(file.exists(file.path(d, "rep_boxplot.png")))
+})
