@@ -22,11 +22,10 @@ test_that("build_table1 returns data frame for weighted analysis", {
     ps_var       = "ps",
     verbose      = FALSE
   )
-  wt_df_t1 <- create_ps_weights(
+  wt_df_t1 <- create_matching_weights(
     in_df         = ps_df_t1,
     exposure_var  = "exposure",
     ps_var        = "ps",
-    weight_method = "mw",
     weight_var    = "mw_wt",
     verbose       = FALSE
   )

@@ -101,6 +101,10 @@ add_readme_sheet <- function(wb, readme_text,
 #'   adjusted_label as names giving ggplot2 shape codes (e.g., 16 = filled circle,
 #'   17 = filled triangle). If NULL, ggplot2 default shapes are used.
 #' @param use_absolute Logical. Plot absolute values of std diff? (default FALSE)
+#' @param std_diff_threshold Numeric. Balance threshold on the raw standardized
+#'   difference scale (default 0.1) at which the dashed reference line(s) are
+#'   drawn. Inputs are expected on the raw (0-1) SMD scale produced by
+#'   \code{\link{build_table1}}, not a percentage.
 #' @return Invisibly returns a \code{ggplot} object, or \code{invisible(NULL)}
 #'   if \pkg{ggplot2} is unavailable or no data remain after removing NAs.
 #' @section Side Effects:
@@ -108,7 +112,8 @@ add_readme_sheet <- function(wb, readme_text,
 #' @keywords internal
 create_love_plot <- function(variable_names, crude_std_diff, adjusted_std_diff,
                              crude_label, adjusted_label, title, output_path,
-                             colors = NULL, shapes = NULL, use_absolute = FALSE) {
+                             colors = NULL, shapes = NULL, use_absolute = FALSE,
+                             std_diff_threshold = 0.1) {
   if (!requireNamespace("ggplot2", quietly = TRUE)) {
     warning("Package 'ggplot2' is required for Love plot. Skipping.")
     return(invisible(NULL))
@@ -143,11 +148,11 @@ create_love_plot <- function(variable_names, crude_std_diff, adjusted_std_diff,
   
   if (use_absolute) {
     balance_long$Std_Diff <- abs(balance_long$Std_Diff)
-    x_lab <- "Absolute Standardized Difference (%)"
-    vline_x <- 10
+    x_lab <- "Absolute Standardized Difference"
+    vline_x <- std_diff_threshold
   } else {
-    x_lab <- "Standardized Difference (%)"
-    vline_x <- c(-10, 10)
+    x_lab <- "Standardized Difference"
+    vline_x <- c(-std_diff_threshold, std_diff_threshold)
   }
   
   p <- ggplot2::ggplot(balance_long,
@@ -177,8 +182,9 @@ create_love_plot <- function(variable_names, crude_std_diff, adjusted_std_diff,
 #' distribution figures - a density plot, a within-group histogram, and a
 #' histogram+density overlay - for a "panel 1" (unweighted / pre) sample and a
 #' "panel 2" (weighted / post) sample, plus an optional weight box plot. Shared
-#' by [create_ps_weights()], [create_ps_matched_cohort()], and
-#' [create_ps_fs_weights()] so that all three emit a consistent figure style.
+#' by the weighting functions ([create_iptw()], [create_matching_weights()],
+#' [create_overlap_weights()]), [create_ps_matched_cohort()], and
+#' [create_ps_fs_weights()] so that all emit a consistent figure style.
 #'
 #' Exposure groups are coloured red (\code{"Reference"}, exposure 0) and blue
 #' (\code{"Exposure"}, exposure 1).
@@ -342,4 +348,153 @@ create_love_plot <- function(variable_names, crude_std_diff, adjusted_std_diff,
   }
 
   invisible(NULL)
+}
+
+#### Balance verdict on the raw SMD scale ####
+#' Is a covariate balanced at the given threshold?
+#'
+#' Compares the absolute standardized mean difference against the threshold on
+#' the \emph{raw} (0-1) SMD scale produced by \code{\link{build_table1}}. This is
+#' the single source of truth for the "Balanced" verdict used by the weighting,
+#' matching, and fine-stratification balance tables (it replaces an earlier
+#' \code{abs(SMD) < threshold * 100} comparison that silently passed every
+#' covariate on raw-scale input).
+#'
+#' @param std_diff Numeric (scalar or vector) standardized mean difference, raw scale.
+#' @param threshold Numeric balance threshold on the raw scale (e.g. 0.1).
+#' @return Logical of the same length as \code{std_diff}; \code{NA} propagates.
+#' @keywords internal
+.is_balanced <- function(std_diff, threshold) {
+  abs(std_diff) < threshold
+}
+
+#### PS trimming (Crump symmetric / Sturmer asymmetric) ####
+#' Trim a propensity-score distribution (point removal)
+#'
+#' Returns a logical \code{keep} mask flagging which observations fall inside the
+#' retained propensity-score region. Two conventions are supported:
+#' \itemize{
+#'   \item \code{"crump"} - symmetric Crump et al. (2009): keep
+#'     \code{ps in [alpha, 1 - alpha]}.
+#'   \item \code{"sturmer"} - asymmetric Sturmer et al. (2010/2021): keep
+#'     \code{ps in [Q(ps | exposed, p), Q(ps | reference, 1 - p)]}, where the
+#'     lower bound is the \code{p}-th percentile of the PS among the exposed
+#'     (\code{exp == 1}) and the upper bound is the \code{(1 - p)}-th percentile
+#'     among the reference group (\code{exp == 0}). This assumes \code{exp == 1}
+#'     denotes the treated / new-treatment group.
+#' }
+#' This is \emph{point removal} and is distinct from the common-support range
+#' trimming in \code{\link{create_ps_fs_weights}}
+#' (\code{trim_nonoverlap_region}). Trimming changes the analytic population:
+#' the resulting estimand refers to the trimmed population, not the original
+#' cohort.
+#'
+#' @param ps Numeric propensity-score vector.
+#' @param exp Numeric 0/1 exposure vector (1 = exposed / treated).
+#' @param method One of \code{"none"}, \code{"crump"}, \code{"sturmer"}.
+#' @param crump_alpha Numeric in (0, 0.5). Symmetric Crump bound (default 0.1).
+#' @param sturmer_p Numeric in (0, 0.5). Sturmer tail percentile (default 0.05).
+#' @param verbose Logical. Print the number removed and the interpretation note.
+#' @return Logical vector (length of \code{ps}); \code{TRUE} = keep. \code{NA}
+#'   propensity scores are dropped (\code{keep = FALSE}).
+#' @keywords internal
+.trim_ps <- function(ps, exp, method = c("none", "crump", "sturmer"),
+                     crump_alpha = 0.1, sturmer_p = 0.05, verbose = TRUE) {
+  method <- match.arg(method)
+  n <- length(ps)
+  if (method == "none") {
+    return(rep(TRUE, n))
+  }
+
+  if (method == "crump") {
+    if (!is.numeric(crump_alpha) || length(crump_alpha) != 1 ||
+        crump_alpha <= 0 || crump_alpha >= 0.5) {
+      stop("trim_crump_alpha must be a single number in (0, 0.5)")
+    }
+    lower <- crump_alpha
+    upper <- 1 - crump_alpha
+    desc  <- sprintf("Crump symmetric: keep PS in [%.3f, %.3f]", lower, upper)
+  } else {  # sturmer
+    if (!is.numeric(sturmer_p) || length(sturmer_p) != 1 ||
+        sturmer_p <= 0 || sturmer_p >= 0.5) {
+      stop("trim_sturmer_p must be a single number in (0, 0.5)")
+    }
+    ps_exp <- ps[exp == 1 & !is.na(exp)]
+    ps_ref <- ps[exp == 0 & !is.na(exp)]
+    if (length(ps_exp) == 0 || length(ps_ref) == 0) {
+      stop("Sturmer trimming requires both exposure groups to be non-empty")
+    }
+    lower <- as.numeric(stats::quantile(ps_exp, sturmer_p, na.rm = TRUE))
+    upper <- as.numeric(stats::quantile(ps_ref, 1 - sturmer_p, na.rm = TRUE))
+    desc  <- sprintf("Sturmer asymmetric: keep PS in [%.4f, %.4f] (Q exposed %.2f, Q reference %.2f)",
+                     lower, upper, sturmer_p, 1 - sturmer_p)
+  }
+
+  keep <- !is.na(ps) & ps >= lower & ps <= upper
+  n_removed <- sum(!keep)
+  if (verbose) {
+    message(sprintf("PS trimming (%s)", desc))
+    message(sprintf("  Removed %d of %d observations (%.1f%%)",
+                    n_removed, n, 100 * n_removed / n))
+    message("  Note: trimming changes the analytic population; estimated effects ",
+            "refer to the trimmed population, not the original cohort.")
+  }
+  keep
+}
+
+#### Weight truncation / winsorizing (IPTW-family weights) ####
+#' Truncate or winsorize a weight vector
+#'
+#' Bounds extreme weights for inverse-probability-style weights. Matching and
+#' overlap weights are bounded by construction and do not use this. Truncation
+#' changes the effective analytic population / estimand interpretation and
+#' should be reported as a sensitivity analysis.
+#'
+#' @param weights Numeric weight vector.
+#' @param method One of \code{"none"}, \code{"percentile"}, \code{"cap"}.
+#' @param percentile Length-2 numeric \code{c(lower, upper)} in `[0, 1]` used when
+#'   \code{method = "percentile"} (winsorize to those pooled quantiles). Upper-only
+#'   truncation is expressed as \code{c(0, 0.99)}.
+#' @param cap Single positive number used when \code{method = "cap"} (absolute
+#'   upper cap on the weights).
+#' @param verbose Logical. Print the cut points and number affected.
+#' @return A list with \code{w} (truncated weights) and \code{cut} (the applied
+#'   cut points: \code{c(lower, upper)} for percentile, or \code{c(NA, cap)} for cap).
+#' @keywords internal
+.truncate_ps_weights <- function(weights, method = c("none", "percentile", "cap"),
+                                 percentile = c(0.01, 0.99), cap = NULL,
+                                 verbose = TRUE) {
+  method <- match.arg(method)
+  if (method == "none") {
+    return(list(w = weights, cut = c(NA_real_, NA_real_)))
+  }
+
+  if (method == "percentile") {
+    if (!is.numeric(percentile) || length(percentile) != 2 ||
+        any(percentile < 0) || any(percentile > 1) || percentile[1] >= percentile[2]) {
+      stop("truncate_percentile must be c(lower, upper) with 0 <= lower < upper <= 1")
+    }
+    lo <- as.numeric(stats::quantile(weights, percentile[1], na.rm = TRUE))
+    hi <- as.numeric(stats::quantile(weights, percentile[2], na.rm = TRUE))
+    n_low  <- sum(weights < lo, na.rm = TRUE)
+    n_high <- sum(weights > hi, na.rm = TRUE)
+    w <- pmin(pmax(weights, lo), hi)
+    if (verbose) {
+      message(sprintf("Weight truncation (percentile [%.3f, %.3f]): cut at [%.4f, %.4f]",
+                      percentile[1], percentile[2], lo, hi))
+      message(sprintf("  Winsorized %d low and %d high weights", n_low, n_high))
+    }
+    return(list(w = w, cut = c(lo, hi)))
+  }
+
+  # method == "cap"
+  if (!is.numeric(cap) || length(cap) != 1 || cap <= 0) {
+    stop("truncate_cap must be a single positive number when truncate_method = 'cap'")
+  }
+  n_capped <- sum(weights > cap, na.rm = TRUE)
+  w <- pmin(weights, cap)
+  if (verbose) {
+    message(sprintf("Weight truncation (absolute cap = %.4f): capped %d weights", cap, n_capped))
+  }
+  list(w = w, cut = c(NA_real_, cap))
 }

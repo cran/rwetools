@@ -17,6 +17,7 @@ estimate_ps(
   ps_var = "ps",
   interactions = NULL,
   exclude_vars_w_extreme_distribution = FALSE,
+  separation_action = c("warn", "error", "ignore"),
   verbose = TRUE
 )
 }
@@ -51,10 +52,26 @@ instead of throwing error (default: FALSE). The categorical screen unions levels
 across the two exposure groups, so a level present in one group but absent in the
 other is counted as n = 0 and flagged by the cnt < 5 rule.}
 
+\item{separation_action}{Character. Action taken when the post-fit
+joint-design (quasi-)separation diagnostic flags the PS model:
+\code{"warn"} (default; emit a warning and continue), \code{"error"}
+(stop with an error), or \code{"ignore"} (proceed silently; base-R glm
+separation warnings are suppressed too). The diagnostic is a base-R
+heuristic (glm non-convergence, fitted probabilities pinned within 1e-8 of
+0 or 1, or a large coefficient paired with a large standard error) that
+complements the marginal, per-variable extreme-distribution screen
+(\code{exclude_vars_w_extreme_distribution}), which is blind to separation
+arising jointly across covariates. Choosing \code{"warn"} preserves the
+prior return value and control flow.}
+
 \item{verbose}{Logical. Print progress messages (default TRUE).}
 }
 \value{
-A data frame with the PS column added. Also saves to CSV if path specified.
+A data frame with the PS column added (with the same number of rows
+as the input). Rows with a missing exposure value or a missing PS-model
+covariate are excluded from model fitting (\code{na.action = na.exclude})
+and receive \code{NA} for the propensity score, with a warning; all other
+rows are unchanged. Also saves to CSV if a path is specified.
 }
 \description{
 This function calculates propensity scores using logistic regression and adds them

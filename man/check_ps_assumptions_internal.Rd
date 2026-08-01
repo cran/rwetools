@@ -20,8 +20,8 @@ A list of assumption-check results, each element containing a
 \code{detected} flag and relevant summary statistics.
 }
 \description{
-Internal function used by \code{\link{create_ps_weights}} and other PS
-functions to run diagnostic checks on propensity scores, including perfect
+Internal function used by the PS weighting and matching functions to run
+diagnostic checks on propensity scores, including perfect
 separation, positivity, overlap, and covariate balance.
 }
 \keyword{internal}

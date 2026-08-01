@@ -64,8 +64,9 @@ Internal helper that renders the standard rwetools propensity-score (PS)
 distribution figures - a density plot, a within-group histogram, and a
 histogram+density overlay - for a "panel 1" (unweighted / pre) sample and a
 "panel 2" (weighted / post) sample, plus an optional weight box plot. Shared
-by \code{\link[=create_ps_weights]{create_ps_weights()}}, \code{\link[=create_ps_matched_cohort]{create_ps_matched_cohort()}}, and
-\code{\link[=create_ps_fs_weights]{create_ps_fs_weights()}} so that all three emit a consistent figure style.
+by the weighting functions (\code{\link[=create_iptw]{create_iptw()}}, \code{\link[=create_matching_weights]{create_matching_weights()}},
+\code{\link[=create_overlap_weights]{create_overlap_weights()}}), \code{\link[=create_ps_matched_cohort]{create_ps_matched_cohort()}}, and
+\code{\link[=create_ps_fs_weights]{create_ps_fs_weights()}} so that all emit a consistent figure style.
 }
 \details{
 Exposure groups are coloured red (\code{"Reference"}, exposure 0) and blue

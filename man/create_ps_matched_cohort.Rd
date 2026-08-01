@@ -15,10 +15,18 @@ create_ps_matched_cohort(
   exp_value = 1,
   ref_value = 0,
   ps_var = "ps",
+  method = c("nearest", "subclass"),
   ratio = 1,
+  min_controls = NULL,
+  max_controls = NULL,
+  m_order = NULL,
+  subclass_n = NULL,
   caliper = 0.2,
   caliper_scale = c("logit_ps_sd", "raw", "raw_ps_sd"),
   replace = FALSE,
+  trim_method = c("none", "crump", "sturmer"),
+  trim_crump_alpha = 0.1,
+  trim_sturmer_p = 0.05,
   make_crude_matched_table1 = FALSE,
   table1_cont_vars = NULL,
   table1_binary_vars = NULL,
@@ -49,7 +57,24 @@ create_ps_matched_cohort(
 
 \item{ps_var}{Character string. Name of the PS variable column in the data (default: "ps")}
 
-\item{ratio}{Integer. Matching ratio (1:k). Default is 1 for 1:1 matching.}
+\item{method}{Character. \pkg{MatchIt} matching method: "nearest" (default;
+the previous behavior) or "subclass". "subclass" does not produce 1:k pairs
+but returns matching weights (and a subclass) in a \code{.match_weights}
+column; for this method the matched Table 1 and any downstream effect
+estimation must be weighted by \code{.match_weights}.}
+
+\item{ratio}{Integer. Matching ratio (1:k) for "nearest". Default 1.}
+
+\item{min_controls, max_controls}{Numeric or NULL. Variable-ratio bounds passed
+to \pkg{MatchIt} (\code{min.controls} / \code{max.controls}) for
+"nearest". \code{NULL} (default) reproduces fixed 1:\code{ratio}.}
+
+\item{m_order}{Character or NULL. Matching order passed to \pkg{MatchIt}
+(\code{m.order}) for "nearest". \code{NULL} (default) keeps the
+MatchIt default.}
+
+\item{subclass_n}{Integer or NULL. Number of subclasses when
+\code{method = "subclass"}. \code{NULL} (default) uses the MatchIt default.}
 
 \item{caliper}{Numeric. Caliper width on the scale set by \code{caliper_scale}.
 Default is 0.2 (i.e. 0.2 x SD of logit(PS) under the default scale - the
@@ -66,7 +91,16 @@ the behavior of rwetools <= 0.1.x.
 (e.g. \code{caliper = 0.01}).
 }}
 
-\item{replace}{Logical. Whether to match with replacement. Default is FALSE.}
+\item{replace}{Logical. Whether to match with replacement (method = "nearest"). Default FALSE.}
+
+\item{trim_method}{Character. PS trimming applied before matching: "none"
+(default), "crump" (symmetric) or "sturmer" (asymmetric, exposure-group
+percentile tails). Trimming changes the analytic population and the
+interpretation of the estimand.}
+
+\item{trim_crump_alpha}{Numeric in (0, 0.5). Symmetric Crump bound (default 0.1).}
+
+\item{trim_sturmer_p}{Numeric in (0, 0.5). Sturmer tail percentile (default 0.05).}
 
 \item{make_crude_matched_table1}{Logical. Whether to generate crude and matched Table 1 (default: FALSE).}
 
@@ -87,9 +121,10 @@ A data frame containing the matched cohort only (crude data with match indicator
 can be saved to CSV via out_csvpath_crudedata_w_matchindicator).
 }
 \description{
-This function performs 1:k nearest neighbor PS matching using MatchIt and
+This function performs propensity-score matching using \pkg{MatchIt} and
 generates comprehensive diagnostic reports including assumption checks,
-balance tables, and plots.
+balance tables, and plots. The matching algorithm is selected via
+\code{method} (nearest / optimal / full / subclass).
 }
 \section{Side Effects}{
 

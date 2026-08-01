@@ -2,133 +2,135 @@
 % Please edit documentation in R/effect_measures.R
 \name{estimate_hr_ir}
 \alias{estimate_hr_ir}
-\title{Estimate Incidence Rates and Hazard Ratios}
+\title{Estimate Incidence Rates, Hazard Ratios and Incidence Rate Ratios}
 \usage{
 estimate_hr_ir(
-  in_df_unwt = NULL,
-  in_df_wted = NULL,
+  in_df_crude = NULL,
+  in_df_weight = NULL,
+  in_df_match = NULL,
   out_xlsxpath = NULL,
   exposure_var = "exp",
   exp_value = 1,
   ref_value = 0,
   outcome_var = NULL,
-  weight_var = NULL,
-  survival_time = NULL,
-  time_unit = c("days", "years"),
+  followuptime_var = NULL,
+  time_unit = c("days", "months", "years"),
   ir_per_pyears = 1000,
   confidence_level = 0.95,
+  stratification_var = NULL,
+  hr_model = c("Cox", "Fine-Gray"),
+  if_fg_competing_event_var = NULL,
+  if_weight_weight_var = NULL,
+  if_match_match_id = NULL,
+  if_bootstrap_count = NULL,
+  if_bootstrap_n_cores = NULL,
+  if_bootstrap_seed = NULL,
   readme_text = NULL,
-  stratify_by = NULL,
   verbose = TRUE
 )
 }
 \arguments{
-\item{in_df_unwt}{Data frame for unweighted analysis. Set to NULL to skip unweighted analysis.
-This could be the full cohort, matched data, or any specific population}
+\item{in_df_crude}{Data frame for the crude (unadjusted) block, or NULL.}
 
-\item{in_df_wted}{Data frame for weighted analysis. Set to NULL to skip weighted analysis.
-This could be the same as unweighted data or a different population (e.g., trimmed)}
+\item{in_df_weight}{Data frame for the weighted block (requires
+\code{if_weight_weight_var}), or NULL. Cannot be combined with
+\code{in_df_match}.}
 
-\item{out_xlsxpath}{Character string. Path for output Excel file with all results}
+\item{in_df_match}{Data frame for the matched block, or NULL. Cannot be
+combined with \code{in_df_weight}.}
 
-\item{exposure_var}{Character string. Name of binary exposure/treatment variable (default: "exp")}
+\item{out_xlsxpath}{Character path for an Excel output file, or NULL.}
 
-\item{exp_value}{Value representing the exposed/treated group (default: 1)}
+\item{exposure_var}{Character. Binary exposure variable name.}
 
-\item{ref_value}{Value representing the reference/control group (default: 0)}
+\item{exp_value, ref_value}{Values of \code{exposure_var} for the exposed
+and reference groups.}
 
-\item{outcome_var}{Character string. Name of the event indicator variable (0=censored, 1=event)}
+\item{outcome_var}{Character. Event indicator (0 = censored, 1 = event).}
 
-\item{weight_var}{Character string. Name of weight variable in the weighted dataset.
-Required when in_df_wted is not NULL.}
+\item{followuptime_var}{Character. Follow-up time variable (required).}
 
-\item{survival_time}{Character string. Name of survival/follow-up time variable (required)}
+\item{time_unit}{"days", "months" or "years" -- the unit of
+\code{followuptime_var}; person-years are derived as days/365.25,
+months/12, or years as-is.}
 
-\item{time_unit}{Character string. Unit of time for survival analysis: "days" or "years".
-Default: "days"}
+\item{ir_per_pyears}{Multiplier for IR/IRD (1, 100, 1000, 10000, 100000).}
 
-\item{ir_per_pyears}{Numeric. Multiplier for incidence rate per person-years.
-Allowed values: 1, 100, 1000, 10000, 100000.
-Default: 1000 (i.e., IR per 1,000 person-years).
-Column name is fixed as IR_per_Npy_Unwt / IR_per_Npy_Wted. The actual
-multiplier value is documented in the Analysis Summary sheet.}
+\item{confidence_level}{Confidence level in (0, 1). Default 0.95.}
 
-\item{confidence_level}{Numeric. Confidence level for confidence intervals (default: 0.95 for 95\% CI)}
+\item{stratification_var}{Character or NULL. When supplied, the hazard
+model is stratified via \code{strata()} and IR/IRD/IRR are
+direct-standardized with the total (weighted) person-time distribution
+as the standard.}
 
-\item{readme_text}{Character string. Optional message to include in README sheet at beginning of Excel file.
-Use this to document the analysis parameters, data sources, or any notes}
+\item{hr_model}{"Cox" (cause-specific HR) or "Fine-Gray" (subdistribution
+HR; requires \code{if_fg_competing_event_var}).}
 
-\item{stratify_by}{Character string. Name of the stratification variable.
-When specified:
-- Cox model uses strata() in the formula (separate baseline hazards per stratum)
-- IR/IRD are computed via direct standardization using total cohort person-time
-distribution as weights
-Default: NULL (no stratification)}
+\item{if_fg_competing_event_var}{Character or NULL. Competing-event
+indicator (1 = competing event); required for \code{hr_model =
+  "Fine-Gray"}, ignored (with a message) for "Cox".}
 
-\item{verbose}{Logical. Print progress messages (default TRUE).}
+\item{if_weight_weight_var}{Character or NULL. Weight column in
+\code{in_df_weight}; required with that block, ignored (message)
+otherwise.}
+
+\item{if_match_match_id}{Character or NULL. Match-set id column in
+\code{in_df_match}; enables pair clustering (HR/Fine-Gray SE) and
+pair-level bootstrap resampling. Without it the matched block uses a
+non-clustered robust SE and row resampling (a message is emitted).
+Ignored (message) without \code{in_df_match}.}
+
+\item{if_bootstrap_count}{Integer or NULL. When supplied, adds percentile
+bootstrap CIs (columns \code{*_Boot}) for IR, IRD, IRR and the hazard
+estimate. The bootstrap is ALWAYS fixed-weight ("frozen"): weights and
+standardization shares are held at their original values, so
+PS-estimation uncertainty is not propagated (a message states this).}
+
+\item{if_bootstrap_n_cores}{Integer or NULL. Cores for the bootstrap
+(NULL = all minus one); ignored (message) without
+\code{if_bootstrap_count}.}
+
+\item{if_bootstrap_seed}{Integer or NULL. Bootstrap RNG seed; ignored
+(message) without \code{if_bootstrap_count}.}
+
+\item{readme_text}{Optional README text for the Excel output.}
+
+\item{verbose}{Logical. Print progress and method messages (default TRUE).}
 }
 \value{
-Invisibly returns a list containing:
-\itemize{
-\item incidence_rates: Data frame with event counts, person-years, and incidence rates
-\item hazard_ratios: Data frame with unweighted and/or weighted HR estimates
-\item unweighted_model: The unweighted Cox model object (if unweighted analysis performed)
-\item weighted_model: The weighted Cox model object (if weighted analysis performed)
-\item stratum_details_unwt: Data frame with stratum-level details (if stratified, unweighted)
-\item stratum_details_wted: Data frame with stratum-level details (if stratified, weighted)
-Also saves results to Excel file when out_xlsxpath is provided
-}
+Invisibly, a list with \code{incidence_rates} (one row set with
+per-block column suffixes \code{_Crude} / \code{_Weighted} /
+\code{_Matched}), \code{hazard_ratios} (Cox) or \code{subdist_hazard}
+(Fine-Gray), \code{incidence_rate_ratios}, per-block model objects
+(\code{models}), stratum details when standardized, bootstrap matrices
+when run, and \code{ir_per_pyears}.
 }
 \description{
-This function estimates incidence rates and hazard ratios for time-to-event outcomes.
-It can perform unweighted analysis, weighted (propensity score adjusted) analysis, or both,
-using potentially different datasets for each analysis type.
-Incidence rate CIs are estimated using Poisson distribution.
+Estimates incidence rates (IR), incidence rate differences (IRD), a hazard
+model (Cox HR or Fine-Gray subdistribution HR), and marginal incidence
+rate ratios (IRR) for a time-to-event outcome, for up to two analysis
+blocks: a crude block (\code{in_df_crude}) plus either a weighted block
+(\code{in_df_weight}, e.g. IPTW) or a matched block (\code{in_df_match}).
 }
 \details{
-The function allows flexible analysis configurations:
+Analytical confidence intervals are always computed with a fixed,
+per-block method (there are no CI-method arguments):
 \itemize{
-\item Unweighted only: Set in_df_unwt = data, in_df_wted = NULL
-\item Weighted only: Set in_df_unwt = NULL, in_df_wted = data
-\item Both: Provide both datasets (can be the same or different populations)
-}
-
-For unweighted analysis:
-\itemize{
-\item Uses standard Cox regression without weights
-\item Can be applied to matched data, trimmed data, or full cohort
-}
-
-For weighted analysis:
-\itemize{
-\item Uses weighted Cox regression with specified weights
-\item Typically applied to PS-weighted data (IPTW, MW, OW, FS weights)
-}
-
-Stratification (stratify_by parameter):
-When stratify_by is specified:
-\itemize{
-\item Cox model: Fits a stratified Cox proportional hazards model using strata() in the
-model formula. This allows separate baseline hazard functions for each stratum while
-estimating a common treatment effect (HR) across strata.
-\item IR/IRD: Uses direct standardization with total cohort person-time distribution as
-standard weights.
-\itemize{
-\item IR_std = sum(Rate_k * W_k) where W_k = PT_total_k / PT_total
-\item Variance via delta method: Var = sum(W_k^2 * d_k / PT_k^2)
-\item IRD_std = IR_std_exposed - IR_std_unexposed
-\item CI for standardized IR uses log-transformation to ensure positive bounds
-}
-}
-
-ir_per_pyears parameter:
-Controls the person-year multiplier for incidence rates and incidence rate differences.
-For example:
-\itemize{
-\item ir_per_pyears = 1000: rates expressed per 1,000 person-years (default)
-\item ir_per_pyears = 100000: rates expressed per 100,000 person-years
-Output column names are fixed (e.g., IR_per_Npy_Unwt, IR_per_Npy_Wted). The multiplier
-value is recorded in the Analysis Summary sheet.
+\item Crude/matched IR: Garwood exact-Poisson (gamma); standardized IR
+arm CIs: Fay--Feuer gamma (single stratum collapses to Garwood).
+\item Weighted IR/IRD: design-based robust (sandwich) variance via a
+joint weighted quasi-Poisson cell model (Lumley 2004); standardized
+variants use the joint sandwich/delta method.
+\item HR: crude block uses the Cox model SE; weighted block the robust
+sandwich SE; matched block the robust SE clustered on
+\code{if_match_match_id} (Lin--Wei 1989; Austin 2016).
+\item Fine-Gray sHR (\code{hr_model = "Fine-Gray"}): robust SE clustered
+on the subject (crude/weighted) or the match id (matched); weighted
+expansion weights are IPCW x PS weight (Fine & Gray 1999).
+\item IRR (always reported): crude/matched blocks use a marginal Poisson
+rate model (model SE, equal to sqrt(1/D1 + 1/D0)); the weighted block
+uses survey::svyglm quasi-Poisson (robust SE). With
+\code{stratification_var}, the IRR is direct-standardized.
 }
 }
 \section{Side Effects}{
@@ -141,49 +143,52 @@ Creates the output directory and writes an Excel workbook when
 csv_path <- system.file("extdata", "sample_data.csv", package = "rwetools")
 df <- read.csv(csv_path)
 
-# Unweighted analysis only
-result <- estimate_hr_ir(
-  in_df_unwt    = df,
-  in_df_wted    = NULL,
-  exposure_var  = "exposure",
-  outcome_var   = "outcome",
-  survival_time = "follow_up_days",
-  time_unit     = "days",
-  ir_per_pyears = 1000,
-  verbose       = FALSE
+# Crude block only
+res <- estimate_hr_ir(
+  in_df_crude      = df,
+  exposure_var     = "exposure",
+  outcome_var      = "outcome",
+  followuptime_var = "follow_up_days",
+  time_unit        = "days",
+  verbose          = FALSE
 )
-result$incidence_rates
+res$incidence_rates
+res$incidence_rate_ratios
 
 \donttest{
-# Weighted analysis with Excel output (requires openxlsx)
-if (requireNamespace("openxlsx", quietly = TRUE)) {
-  df_ps <- estimate_ps(
-    in_df        = df,
-    exposure_var = "exposure",
-    class_vars   = c("cat1", "cat2", "cat3", "cat4"),
-    cont_vars    = c("cont1", "cont2", "cont3"),
-    verbose      = FALSE
-  )
-  df_wt <- create_ps_weights(
-    in_df         = df_ps,
-    exposure_var  = "exposure",
-    ps_var        = "ps",
-    weight_method = "mw",
-    weight_var    = "mw_wt",
-    verbose       = FALSE
-  )
-  out_xlsx <- tempfile(fileext = ".xlsx")
-  result2 <- estimate_hr_ir(
-    in_df_unwt    = df,
-    in_df_wted    = df_wt,
-    out_xlsxpath  = out_xlsx,
-    exposure_var  = "exposure",
-    outcome_var   = "outcome",
-    survival_time = "follow_up_days",
-    weight_var    = "mw_wt",
-    ir_per_pyears = 1000,
-    verbose       = FALSE
-  )
-}
+# Crude + weighted blocks, Fine-Gray hazard model, bootstrap CIs
+df_ps <- estimate_ps(
+  in_df = df, exposure_var = "exposure",
+  class_vars = c("cat1", "cat2", "cat3", "cat4"),
+  cont_vars  = c("cont1", "cont2", "cont3"),
+  verbose = FALSE
+)
+df_wt <- create_iptw(
+  in_df = df_ps, exposure_var = "exposure",
+  ps_var = "ps", weight_var = "iptw", verbose = FALSE
+)
+res_fg <- estimate_hr_ir(
+  in_df_crude               = df,
+  in_df_weight              = df_wt,
+  if_weight_weight_var      = "iptw",
+  exposure_var              = "exposure",
+  outcome_var               = "outcome",
+  followuptime_var          = "follow_up_days",
+  hr_model                  = "Fine-Gray",
+  if_fg_competing_event_var = "competing_event",
+  verbose                   = FALSE
+)
+res_fg$subdist_hazard
+
+res_boot <- estimate_hr_ir(
+  in_df_crude          = df,
+  exposure_var         = "exposure",
+  outcome_var          = "outcome",
+  followuptime_var     = "follow_up_days",
+  if_bootstrap_count   = 200,
+  if_bootstrap_n_cores = 1,
+  if_bootstrap_seed    = 2026,
+  verbose              = FALSE
+)
 }
 }

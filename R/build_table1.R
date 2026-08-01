@@ -73,11 +73,10 @@
 #'     cont_vars    = c("cont1", "cont2", "cont3"),
 #'     verbose      = FALSE
 #'   )
-#'   df_wt <- create_ps_weights(
+#'   df_wt <- create_matching_weights(
 #'     in_df         = df_ps,
 #'     exposure_var  = "exposure",
 #'     ps_var        = "ps",
-#'     weight_method = "mw",
 #'     weight_var    = "mw_wt",
 #'     verbose       = FALSE
 #'   )

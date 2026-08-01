@@ -90,6 +90,35 @@ test_that("create_ps_matched_cohort: logit_ps_sd requires PS within (0,1)", {
   )
 })
 
+test_that("create_ps_matched_cohort supports trimming before matching", {
+  skip_if_not_installed("MatchIt")
+  res <- create_ps_matched_cohort(
+    in_df = ps_df_match, exposure_var = "exposure", ps_var = "ps", ratio = 1,
+    trim_method = "crump", trim_crump_alpha = 0.1, verbose = FALSE)
+  expect_s3_class(res, "data.frame")
+  expect_true(all(res$ps >= 0.1 & res$ps <= 0.9))
+})
+
+test_that("create_ps_matched_cohort: subclass matching returns subclasses", {
+  skip_if_not_installed("MatchIt")
+  res <- create_ps_matched_cohort(
+    in_df = ps_df_match, exposure_var = "exposure", ps_var = "ps",
+    method = "subclass", subclass_n = 5, verbose = FALSE)
+  expect_s3_class(res, "data.frame")
+  expect_true(".match_weights" %in% names(res))
+  # match_id carries the subclass label for subclass matching
+  expect_true("match_id" %in% names(res))
+  expect_setequal(unique(res$exposure), c(0, 1))
+})
+
+test_that("create_ps_matched_cohort rejects invalid method", {
+  expect_error(
+    create_ps_matched_cohort(
+      in_df = ps_df_match, exposure_var = "exposure", ps_var = "ps",
+      method = "bogus", verbose = FALSE),
+    "should be one of")
+})
+
 test_that("create_ps_matched_cohort emits FS-style distribution plots", {
   skip_if_not_installed("MatchIt")
   skip_if_not_installed("ggplot2")

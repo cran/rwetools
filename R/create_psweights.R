@@ -1,40 +1,73 @@
-# MW OW IPTW STABIPTW ##########
-#' 
-#' Calculate propensity score weights and optionally generate diagnostic reports.
-#' 
-#' This function calculates various types of propensity score weights (matching weights,
-#' overlap weights, IPTW, stabilized IPTW) and adds them to a dataset that already 
-#' contains propensity scores. Optionally generates comprehensive diagnostic reports
-#' including assumption checks, balance tables, and plots.
+# WEIGHTING FAMILY (IPTW / MW / OW) ##########
+#' Inverse-probability-of-treatment weights (IPTW, ATE)
 #'
-#' @param in_df Data frame containing the input data with PS already calculated (optional if in_csvpath provided)
-#' @param in_csvpath Character string. Path to input CSV file with PS already calculated (optional if in_df provided)
-#' @param out_csvpath Character string. Path for output CSV file (optional)
-#' @param out_xlsxpath_report Character string. Path for output Excel diagnostic report (optional).
-#'                            If NULL, no diagnostic report is generated.
-#' @param out_dir_plots Character string. Directory to save plot files (optional).
-#'                      If NULL, no plots are saved.
-#' @param exposure_var Character string. Name of the binary exposure/treatment variable column (default: "exp")
-#' @param exp_value Value representing the exposed/treated group (default: 1)
-#' @param ref_value Value representing the reference/control group (default: 0)
-#' @param ps_var Character string. Name of the PS variable column in the data (default: "ps")
-#' @param weight_method Character string. Type of weight to calculate: "mw" (matching weights),
-#'                      "ow" (overlap weights), "iptw" (inverse probability weights), 
-#'                      "stabiptw" (stabilized IPTW). Only ONE method can be specified.
-#' @param weight_var Character string. Name for the weight variable column (default: "psweight")
-#' @param estimand Character string. Target estimand: "ATT" (average treatment effect on treated),
-#'                 "ATE" (average treatment effect), or "ATO" (average treatment effect in overlap population).
-#'                 Only used for IPTW methods. For MW/OW, estimand is determined by the method itself.
-#' @param make_unwt_wt_table1 Logical. Whether to generate unweighted and weighted Table 1 (default: FALSE).
-#'                            Only used if out_xlsxpath_report is provided.
-#' @param table1_cont_vars Character vector. Names of continuous variables for Table 1 (optional, auto-detected if NULL)
-#' @param table1_binary_vars Character vector. Names of binary variables for Table 1 (optional, auto-detected if NULL)
-#' @param table1_cat_vars Character vector. Names of categorical variables for Table 1 (optional, auto-detected if NULL)
-#' @param std_diff_threshold Numeric. Threshold for acceptable standardized difference (default: 0.1)
-#' @param readme_text Character string. Optional message to include in README sheet of Excel report
+#' Adds inverse-probability-of-treatment weights targeting the average treatment
+#' effect (ATE) to a data set that already contains propensity scores, and
+#' optionally writes a diagnostic Excel report, distribution plots, and a
+#' weighted/unweighted Table 1. Set \code{stabilize = TRUE} for stabilized IPTW.
+#'
+#' This is the ATE member of the rwetools weighting family, which replaces the
+#' removed \code{create_ps_weights()}. Use \code{\link{create_matching_weights}}
+#' for matching weights (ATM) and \code{\link{create_overlap_weights}} for
+#' overlap weights (ATO).
+#'
+#' @section Estimand:
+#' The estimand is fixed at the ATE. IPTW for the ATT (SMR weights:
+#' treated = 1, control = PS / (1 - PS)) is a valid method but is not supported
+#' in this version.
+#'
+#' @section Trimming and truncation:
+#' Optional propensity-score trimming (\code{trim_method}) and weight truncation
+#' (\code{truncate_method}) are off by default. Both change the analytic
+#' population, so trimmed/truncated estimates refer to the trimmed (analytic)
+#' population and its estimand, not the original cohort; report them accordingly
+#' (typically as sensitivity analyses). \code{trim_method = "sturmer"} assumes
+#' \code{exp_value} denotes the treated / new-treatment group.
+#'
+#' @param in_df Data frame with PS already calculated (optional if
+#'   \code{in_csvpath} given).
+#' @param in_csvpath Character. Path to input CSV with PS already calculated
+#'   (optional if \code{in_df} given).
+#' @param out_csvpath Character. Path for output CSV (optional).
+#' @param out_xlsxpath_report Character. Path for the Excel diagnostic report
+#'   (optional; requires \pkg{openxlsx}).
+#' @param out_dir_plots Character. Directory for plot files (optional; requires
+#'   \pkg{ggplot2}).
+#' @param exposure_var Character. Binary exposure/treatment column (default "exp").
+#' @param exp_value Value of the exposed/treated group (default 1).
+#' @param ref_value Value of the reference/control group (default 0).
+#' @param ps_var Character. PS column name (default "ps").
+#' @param weight_var Character. Name for the weight column (default "psweight").
+#' @param stabilize Logical. If TRUE, compute stabilized IPTW (default FALSE).
+#' @param trim_method Character. PS trimming: "none" (default), "crump"
+#'   (symmetric, keep PS in `[alpha, 1 - alpha]`) or "sturmer" (asymmetric,
+#'   exposure-group percentile tails).
+#' @param trim_crump_alpha Numeric in (0, 0.5). Symmetric Crump bound (default 0.1).
+#' @param trim_sturmer_p Numeric in (0, 0.5). Sturmer tail percentile (default 0.05).
+#' @param truncate_method Character. Weight truncation (IPTW only): "none"
+#'   (default), "percentile" (winsorize to \code{truncate_percentile}) or "cap"
+#'   (absolute upper cap \code{truncate_cap}).
+#' @param truncate_percentile Length-2 numeric \code{c(lower, upper)} used when
+#'   \code{truncate_method = "percentile"} (default \code{c(0.01, 0.99)};
+#'   upper-only truncation is \code{c(0, 0.99)}).
+#' @param truncate_cap Single positive number used when
+#'   \code{truncate_method = "cap"}.
+#' @param make_unwt_wt_table1 Logical. Build unweighted and weighted Table 1
+#'   (default FALSE; only used when \code{out_xlsxpath_report} is given).
+#' @param table1_cont_vars Character vector. Continuous vars for Table 1
+#'   (auto-detected if NULL).
+#' @param table1_binary_vars Character vector. Binary vars for Table 1
+#'   (auto-detected if NULL).
+#' @param table1_cat_vars Character vector. Categorical vars for Table 1
+#'   (auto-detected if NULL).
+#' @param std_diff_threshold Numeric. Balance threshold on the raw (0-1)
+#'   standardized-difference scale (default 0.1).
+#' @param readme_text Character. Optional message for a README sheet in the
+#'   Excel report.
 #' @param verbose Logical. Print progress messages (default TRUE).
 #'
-#' @return A data frame with the weight column added. Also saves to CSV if path specified.
+#' @return Invisibly, the input data with the weight column added (rows are
+#'   removed if trimming is applied). Outputs are written when paths are given.
 #'
 #' @section Side Effects:
 #' \itemize{
@@ -55,38 +88,180 @@
 #'   verbose      = FALSE
 #' )
 #'
-#' # Add matching weights
-#' df_mw <- create_ps_weights(
-#'   in_df         = df_ps,
-#'   exposure_var  = "exposure",
-#'   ps_var        = "ps",
-#'   weight_method = "mw",
-#'   weight_var    = "mw_wt",
-#'   verbose       = FALSE
+#' # IPTW (ATE)
+#' df_iptw <- create_iptw(
+#'   in_df        = df_ps,
+#'   exposure_var = "exposure",
+#'   ps_var       = "ps",
+#'   weight_var   = "iptw_wt",
+#'   verbose      = FALSE
+#' )
+#' summary(df_iptw$iptw_wt)
+#'
+#' # Stabilized IPTW with upper-only weight truncation at the 99th percentile
+#' df_siptw <- create_iptw(
+#'   in_df               = df_ps,
+#'   exposure_var        = "exposure",
+#'   ps_var              = "ps",
+#'   weight_var          = "siptw_wt",
+#'   stabilize           = TRUE,
+#'   truncate_method     = "percentile",
+#'   truncate_percentile = c(0, 0.99),
+#'   verbose             = FALSE
+#' )
+#' summary(df_siptw$siptw_wt)
+create_iptw <- function(
+    in_df = NULL, in_csvpath = NULL,
+    out_csvpath = NULL, out_xlsxpath_report = NULL, out_dir_plots = NULL,
+    exposure_var = "exp", exp_value = 1, ref_value = 0, ps_var = "ps",
+    weight_var = "psweight", stabilize = FALSE,
+    trim_method = c("none", "crump", "sturmer"),
+    trim_crump_alpha = 0.1, trim_sturmer_p = 0.05,
+    truncate_method = c("none", "percentile", "cap"),
+    truncate_percentile = c(0.01, 0.99), truncate_cap = NULL,
+    make_unwt_wt_table1 = FALSE,
+    table1_cont_vars = NULL, table1_binary_vars = NULL, table1_cat_vars = NULL,
+    std_diff_threshold = 0.1, readme_text = NULL, verbose = TRUE) {
+  .run_ps_weighting(
+    in_df = in_df, in_csvpath = in_csvpath, out_csvpath = out_csvpath,
+    out_xlsxpath_report = out_xlsxpath_report, out_dir_plots = out_dir_plots,
+    exposure_var = exposure_var, exp_value = exp_value, ref_value = ref_value,
+    ps_var = ps_var, method = "iptw", estimand = "ATE", stabilize = stabilize,
+    weight_var = weight_var, trim_method = trim_method,
+    trim_crump_alpha = trim_crump_alpha, trim_sturmer_p = trim_sturmer_p,
+    truncate_method = truncate_method, truncate_percentile = truncate_percentile,
+    truncate_cap = truncate_cap, make_unwt_wt_table1 = make_unwt_wt_table1,
+    table1_cont_vars = table1_cont_vars, table1_binary_vars = table1_binary_vars,
+    table1_cat_vars = table1_cat_vars, std_diff_threshold = std_diff_threshold,
+    readme_text = readme_text, verbose = verbose)
+}
+
+#' Propensity-score matching weights (ATM)
+#'
+#' Adds matching weights (Li & Greene 2013) to a data set that already contains
+#' propensity scores, and optionally writes the same diagnostic report, plots,
+#' and Table 1 as \code{\link{create_iptw}}. Matching weights target the ATM
+#' (the estimand of the matched population) and are bounded in `[0, 1]`, so weight
+#' truncation does not apply.
+#'
+#' @inheritParams create_iptw
+#' @return Invisibly, the input data with the weight column added (rows are
+#'   removed if trimming is applied).
+#' @section Side Effects:
+#' \itemize{
+#'   \item Writes a CSV file when \code{out_csvpath} is provided.
+#'   \item Creates directories, writes an Excel diagnostic report, and saves
+#'     PNG plot files when the corresponding path arguments are supplied.
+#' }
+#' @export
+#' @examples
+#' csv_path <- system.file("extdata", "sample_data.csv", package = "rwetools")
+#' df_ps <- estimate_ps(
+#'   in_df        = read.csv(csv_path),
+#'   exposure_var = "exposure",
+#'   class_vars   = c("cat1", "cat2", "cat3", "cat4"),
+#'   cont_vars    = c("cont1", "cont2", "cont3"),
+#'   verbose      = FALSE
+#' )
+#' df_mw <- create_matching_weights(
+#'   in_df        = df_ps,
+#'   exposure_var = "exposure",
+#'   ps_var       = "ps",
+#'   weight_var   = "mw_wt",
+#'   verbose      = FALSE
 #' )
 #' summary(df_mw$mw_wt)
+create_matching_weights <- function(
+    in_df = NULL, in_csvpath = NULL,
+    out_csvpath = NULL, out_xlsxpath_report = NULL, out_dir_plots = NULL,
+    exposure_var = "exp", exp_value = 1, ref_value = 0, ps_var = "ps",
+    weight_var = "psweight",
+    trim_method = c("none", "crump", "sturmer"),
+    trim_crump_alpha = 0.1, trim_sturmer_p = 0.05,
+    make_unwt_wt_table1 = FALSE,
+    table1_cont_vars = NULL, table1_binary_vars = NULL, table1_cat_vars = NULL,
+    std_diff_threshold = 0.1, readme_text = NULL, verbose = TRUE) {
+  .run_ps_weighting(
+    in_df = in_df, in_csvpath = in_csvpath, out_csvpath = out_csvpath,
+    out_xlsxpath_report = out_xlsxpath_report, out_dir_plots = out_dir_plots,
+    exposure_var = exposure_var, exp_value = exp_value, ref_value = ref_value,
+    ps_var = ps_var, method = "mw", estimand = "ATM", stabilize = FALSE,
+    weight_var = weight_var, trim_method = trim_method,
+    trim_crump_alpha = trim_crump_alpha, trim_sturmer_p = trim_sturmer_p,
+    truncate_method = "none", make_unwt_wt_table1 = make_unwt_wt_table1,
+    table1_cont_vars = table1_cont_vars, table1_binary_vars = table1_binary_vars,
+    table1_cat_vars = table1_cat_vars, std_diff_threshold = std_diff_threshold,
+    readme_text = readme_text, verbose = verbose)
+}
+
+#' Propensity-score overlap weights (ATO)
 #'
-#' \donttest{
-#' # Add IPTW weights with Excel diagnostic report (requires openxlsx, ggplot2)
-#' if (requireNamespace("openxlsx", quietly = TRUE) &&
-#'     requireNamespace("ggplot2", quietly = TRUE)) {
-#'   out_xlsx <- tempfile(fileext = ".xlsx")
-#'   out_dir  <- tempdir()
-#'   df_iptw  <- create_ps_weights(
-#'     in_df               = df_ps,
-#'     exposure_var        = "exposure",
-#'     ps_var              = "ps",
-#'     weight_method       = "iptw",
-#'     weight_var          = "iptw_wt",
-#'     estimand            = "ATE",
-#'     out_xlsxpath_report = out_xlsx,
-#'     make_unwt_wt_table1 = TRUE,
-#'     out_dir_plots       = out_dir,
-#'     verbose             = FALSE
-#'   )
+#' Adds overlap weights (Li, Morgan & Zaslavsky 2018) to a data set that already
+#' contains propensity scores, and optionally writes the same diagnostic report,
+#' plots, and Table 1 as \code{\link{create_iptw}}. Overlap weights target the
+#' ATO (average treatment effect in the overlap population) and are bounded in
+#' `[0, 1]`, so weight truncation does not apply.
+#'
+#' @inheritParams create_iptw
+#' @return Invisibly, the input data with the weight column added (rows are
+#'   removed if trimming is applied).
+#' @section Side Effects:
+#' \itemize{
+#'   \item Writes a CSV file when \code{out_csvpath} is provided.
+#'   \item Creates directories, writes an Excel diagnostic report, and saves
+#'     PNG plot files when the corresponding path arguments are supplied.
 #' }
-#' }
-create_ps_weights <- function(
+#' @export
+#' @examples
+#' csv_path <- system.file("extdata", "sample_data.csv", package = "rwetools")
+#' df_ps <- estimate_ps(
+#'   in_df        = read.csv(csv_path),
+#'   exposure_var = "exposure",
+#'   class_vars   = c("cat1", "cat2", "cat3", "cat4"),
+#'   cont_vars    = c("cont1", "cont2", "cont3"),
+#'   verbose      = FALSE
+#' )
+#' df_ow <- create_overlap_weights(
+#'   in_df        = df_ps,
+#'   exposure_var = "exposure",
+#'   ps_var       = "ps",
+#'   weight_var   = "ow_wt",
+#'   verbose      = FALSE
+#' )
+#' summary(df_ow$ow_wt)
+create_overlap_weights <- function(
+    in_df = NULL, in_csvpath = NULL,
+    out_csvpath = NULL, out_xlsxpath_report = NULL, out_dir_plots = NULL,
+    exposure_var = "exp", exp_value = 1, ref_value = 0, ps_var = "ps",
+    weight_var = "psweight",
+    trim_method = c("none", "crump", "sturmer"),
+    trim_crump_alpha = 0.1, trim_sturmer_p = 0.05,
+    make_unwt_wt_table1 = FALSE,
+    table1_cont_vars = NULL, table1_binary_vars = NULL, table1_cat_vars = NULL,
+    std_diff_threshold = 0.1, readme_text = NULL, verbose = TRUE) {
+  .run_ps_weighting(
+    in_df = in_df, in_csvpath = in_csvpath, out_csvpath = out_csvpath,
+    out_xlsxpath_report = out_xlsxpath_report, out_dir_plots = out_dir_plots,
+    exposure_var = exposure_var, exp_value = exp_value, ref_value = ref_value,
+    ps_var = ps_var, method = "ow", estimand = "ATO", stabilize = FALSE,
+    weight_var = weight_var, trim_method = trim_method,
+    trim_crump_alpha = trim_crump_alpha, trim_sturmer_p = trim_sturmer_p,
+    truncate_method = "none", make_unwt_wt_table1 = make_unwt_wt_table1,
+    table1_cont_vars = table1_cont_vars, table1_binary_vars = table1_binary_vars,
+    table1_cat_vars = table1_cat_vars, std_diff_threshold = std_diff_threshold,
+    readme_text = readme_text, verbose = verbose)
+}
+
+# Internal shared worker for the weighting family ##########
+#' 
+#' Internal worker shared by create_iptw / create_matching_weights /
+#' create_overlap_weights. Computes the requested weights (after optional PS
+#' trimming and, for IPTW, weight truncation) and emits the shared diagnostic
+#' outputs (Excel report, plots, weighted/unweighted Table 1, CSV). Returns the
+#' input data with the weight column added (rows removed if trimming applied).
+#' @keywords internal
+#' @noRd
+.run_ps_weighting <- function(
     in_df = NULL,
     in_csvpath = NULL,
     out_csvpath = NULL,
@@ -96,9 +271,16 @@ create_ps_weights <- function(
     exp_value = 1,
     ref_value = 0,
     ps_var = "ps",
-    weight_method = c("mw", "ow", "iptw", "stabiptw"),
+    method = c("iptw", "mw", "ow"),
+    estimand = "ATE",
+    stabilize = FALSE,
     weight_var = "psweight",
-    estimand = c("ATT", "ATE", "ATO"),
+    trim_method = c("none", "crump", "sturmer"),
+    trim_crump_alpha = 0.1,
+    trim_sturmer_p = 0.05,
+    truncate_method = c("none", "percentile", "cap"),
+    truncate_percentile = c(0.01, 0.99),
+    truncate_cap = NULL,
     make_unwt_wt_table1 = FALSE,
     table1_cont_vars = NULL,
     table1_binary_vars = NULL,
@@ -120,18 +302,13 @@ create_ps_weights <- function(
     stop("in_df must be a data frame")
   }
   
-  # Validate weight_method - only ONE allowed
-  weight_method <- tolower(weight_method[1])  # Take first if multiple provided
-  valid_methods <- c("mw", "ow", "iptw", "stabiptw")
-  if (!weight_method %in% valid_methods) {
-    stop(paste("Invalid weight_method. Must be one of:", paste(valid_methods, collapse = ", ")))
-  }
+  # Resolve method / trimming / truncation options
+  method          <- match.arg(method)
+  trim_method     <- match.arg(trim_method)
+  truncate_method <- match.arg(truncate_method)
   if (exp_value == ref_value) {
     stop("exp_value and ref_value must be different")
   }
-  
-  # Validate estimand
-  estimand <- match.arg(estimand)
   
   if (verbose) message("\n========================================")
   if (verbose) message("PROPENSITY SCORE WEIGHTING")
@@ -183,7 +360,17 @@ create_ps_weights <- function(
   # Get PS and exposure vectors
   ps <- data_work[[ps_var]]
   exp <- data_work[[exposure_var]]
-  
+
+  # PS trimming (Crump / Sturmer); default "none" leaves the data unchanged
+  .keep <- .trim_ps(ps, exp, method = trim_method,
+                    crump_alpha = trim_crump_alpha, sturmer_p = trim_sturmer_p,
+                    verbose = verbose)
+  if (!all(.keep)) {
+    data_work <- data_work[.keep, , drop = FALSE]
+    ps  <- ps[.keep]
+    exp <- exp[.keep]
+  }
+
   # Show sample sizes
   n_exp <- sum(exp == 1, na.rm = TRUE)
   n_ref <- sum(exp == 0, na.rm = TRUE)
@@ -202,68 +389,54 @@ create_ps_weights <- function(
   # STEP 3: CALCULATE WEIGHTS           ######################  
   if (verbose) message("\nStep 3: Calculating Weights")
   if (verbose) message("----------------------------------------")
-  if (verbose) message(sprintf("Method: %s", toupper(weight_method)))
+  method_label <- switch(
+    method,
+    iptw = if (stabilize) "Stabilized IPTW" else "IPTW",
+    mw   = "Matching Weights (MW)",
+    ow   = "Overlap Weights (OW)"
+  )
+  if (verbose) message(sprintf("Method: %s", method_label))
   if (verbose) message(sprintf("Estimand: %s", estimand))
   if (verbose) message(sprintf("Weight variable: %s", weight_var))
-  
-  if (weight_method == "mw") {
-    # Matching weights (ATT)
-    # MW = min(PS, 1-PS) / (exp*PS + (1-exp)*(1-PS))
-    mw_numerator <- pmin(ps, 1 - ps)
-    mw_denominator <- exp * ps + (1 - exp) * (1 - ps)
-    data_work[[weight_var]] <- mw_numerator / mw_denominator
-    if (verbose) message("  Matching weights target ATT (Average Treatment on Treated)")
-    
-  } else if (weight_method == "ow") {
-    # Overlap weights (ATO)
-    # OW = exp*(1-PS) + (1-exp)*PS
-    data_work[[weight_var]] <- exp * (1 - ps) + (1 - exp) * ps
-    if (verbose) message("  Overlap weights target ATO (Average Treatment in Overlap)")
-    
-  } else if (weight_method == "iptw") {
-    # Inverse Probability of Treatment Weights
-    if (estimand == "ATT") {
-      # ATT: weight unexposed to look like exposed
-      data_work[[weight_var]] <- ifelse(exp == 1, 1, ps / (1 - ps))
-      if (verbose) message("  IPTW for ATT: Exposed get weight=1, Unexposed get PS/(1-PS)")
-      
-    } else if (estimand == "ATE") {
-      # ATE: weight both groups to population
-      data_work[[weight_var]] <- ifelse(exp == 1, 1/ps, 1/(1 - ps))
+
+  if (method == "iptw") {
+    # Inverse Probability of Treatment Weights, ATE only.
+    if (stabilize) {
+      marginal_prob <- mean(exp, na.rm = TRUE)
+      if (verbose) message(sprintf("  Marginal probability of exposure: %.3f", marginal_prob))
+      weights <- ifelse(exp == 1, marginal_prob / ps, (1 - marginal_prob) / (1 - ps))
+      if (verbose) message("  Stabilized IPTW for ATE")
+    } else {
+      weights <- ifelse(exp == 1, 1 / ps, 1 / (1 - ps))
       if (verbose) message("  IPTW for ATE: Exposed get 1/PS, Unexposed get 1/(1-PS)")
-      
-    } else if (estimand == "ATO") {
-      # ATO: weight to overlap population
-      data_work[[weight_var]] <- ifelse(exp == 1, 1 - ps, ps)
-      if (verbose) message("  IPTW for ATO: Exposed get (1-PS), Unexposed get PS")
     }
-    
-  } else if (weight_method == "stabiptw") {
-    # Stabilized IPTW - need marginal probability
-    marginal_prob <- mean(exp, na.rm = TRUE)
-    if (verbose) message(sprintf("  Marginal probability of exposure: %.3f", marginal_prob))
-    
-    if (estimand == "ATT") {
-      # Stabilized ATT weights
-      data_work[[weight_var]] <- ifelse(exp == 1, 1, 
-                                        marginal_prob * ps / ((1 - marginal_prob) * (1 - ps)))
-      
-    } else if (estimand == "ATE") {
-      # Stabilized ATE weights
-      data_work[[weight_var]] <- ifelse(exp == 1, 
-                                        marginal_prob / ps,
-                                        (1 - marginal_prob) / (1 - ps))
-      
-    } else if (estimand == "ATO") {
-      # Stabilized ATO weights (less common)
-      ps_overlap <- ps * (1 - ps)
-      marginal_overlap <- mean(ps_overlap, na.rm = TRUE)
-      data_work[[weight_var]] <- ifelse(exp == 1, 
-                                        marginal_overlap * (1 - ps) / ps_overlap,
-                                        marginal_overlap * ps / ps_overlap)
-    }
-    if (verbose) message("  Stabilized IPTW calculated")
+    # Forward-compat seam: an ATT / SMR branch would slot in here behind an
+    # estimand argument (currently ATE only).
+
+  } else if (method == "mw") {
+    # Matching weights (ATM; Li & Greene 2013)
+    # MW = min(PS, 1-PS) / (exp*PS + (1-exp)*(1-PS))
+    mw_numerator   <- pmin(ps, 1 - ps)
+    mw_denominator <- exp * ps + (1 - exp) * (1 - ps)
+    weights <- mw_numerator / mw_denominator
+    if (verbose) message("  Matching weights target the ATM (matched-population estimand)")
+
+  } else {  # "ow"
+    # Overlap weights (ATO; Li, Morgan & Zaslavsky 2018)
+    # OW = exp*(1-PS) + (1-exp)*PS
+    weights <- exp * (1 - ps) + (1 - exp) * ps
+    if (verbose) message("  Overlap weights target the ATO (overlap population)")
   }
+
+  # Weight truncation / winsorizing (IPTW family only; MW/OW are bounded)
+  if (method == "iptw" && truncate_method != "none") {
+    .tr <- .truncate_ps_weights(weights, method = truncate_method,
+                                percentile = truncate_percentile, cap = truncate_cap,
+                                verbose = verbose)
+    weights <- .tr$w
+  }
+
+  data_work[[weight_var]] <- weights
   
   # Show weight distribution
   weights <- data_work[[weight_var]]
@@ -293,7 +466,7 @@ create_ps_weights <- function(
   }
   
   # Calculate effective sample size
-  if (weight_method %in% c("iptw", "stabiptw")) {
+  if (method == "iptw") {
     ess_exposed <- sum(weights[exp == 1], na.rm = TRUE)^2 / 
       sum(weights[exp == 1]^2, na.rm = TRUE)
     ess_unexposed <- sum(weights[exp == 0], na.rm = TRUE)^2 / 
@@ -445,14 +618,14 @@ create_ps_weights <- function(
     )
     
     # Add ESS for IPTW methods
-    if (weight_method %in% c("iptw", "stabiptw")) {
+    if (method == "iptw") {
       weight_dist_df$Effective_N <- c(ess_exposed, ess_unexposed)
       weight_dist_df$ESS_Pct <- c(100 * ess_exposed / n_exp, 100 * ess_unexposed / n_ref)
     }
     
     openxlsx::addWorksheet(wb, "Weight_Distribution")
-    openxlsx::writeData(wb, "Weight_Distribution", 
-                        sprintf("Weight Method: %s, Estimand: %s", toupper(weight_method), estimand),
+    openxlsx::writeData(wb, "Weight_Distribution",
+                        sprintf("Weight Method: %s, Estimand: %s", method_label, estimand),
                         startCol = 1, startRow = 1)
     openxlsx::writeDataTable(wb, "Weight_Distribution", weight_dist_df, startRow = 3)
     if (verbose) message("  Added Weight Distribution sheet")
@@ -532,10 +705,10 @@ create_ps_weights <- function(
           stringsAsFactors = FALSE
         )
         
-        balance_comparison$Improvement <- abs(balance_comparison$Weighted_Std_Diff) < 
+        balance_comparison$Improvement <- abs(balance_comparison$Weighted_Std_Diff) <
           abs(balance_comparison$Crude_Std_Diff)
-        balance_comparison$Balanced <- abs(balance_comparison$Weighted_Std_Diff) < 
-          (std_diff_threshold * 100)  # Convert to percentage scale
+        balance_comparison$Balanced <- .is_balanced(balance_comparison$Weighted_Std_Diff,
+                                                    std_diff_threshold)
         
         openxlsx::addWorksheet(wb, "Balance_Comparison")
         openxlsx::writeDataTable(wb, "Balance_Comparison", balance_comparison)
@@ -633,7 +806,8 @@ create_ps_weights <- function(
               crude_label = "Unweighted", adjusted_label = "Weighted",
               title = "Standardized Differences in Covariates",
               output_path = file.path(out_dir_plots, "balance_love_plot.png"),
-              colors = c("Unweighted" = "#377eb8", "Weighted" = "#e41a1c")
+              colors = c("Unweighted" = "#377eb8", "Weighted" = "#e41a1c"),
+              std_diff_threshold = std_diff_threshold
             )
           }
         }
@@ -670,11 +844,11 @@ create_ps_weights <- function(
   return(invisible(data_work))
 }
 
-#### Check PS Assumptions (INTERNAL HELPER for create_ps_weights) ####
+#### Check PS Assumptions (INTERNAL HELPER for the PS weighting/matching functions) ####
 #' Check propensity score assumptions
 #'
-#' Internal function used by \code{\link{create_ps_weights}} and other PS
-#' functions to run diagnostic checks on propensity scores, including perfect
+#' Internal function used by the PS weighting and matching functions to run
+#' diagnostic checks on propensity scores, including perfect
 #' separation, positivity, overlap, and covariate balance.
 #'
 #' @param data Data frame containing the propensity score and exposure columns.
@@ -847,9 +1021,10 @@ check_ps_assumptions_internal <- function(data, ps_var, exposure, verbose = TRUE
 #' 
 #' Perform propensity score matching and optionally generate diagnostic reports.
 #' 
-#' This function performs 1:k nearest neighbor PS matching using MatchIt and 
-#' generates comprehensive diagnostic reports including assumption checks, 
-#' balance tables, and plots.
+#' This function performs propensity-score matching using \pkg{MatchIt} and
+#' generates comprehensive diagnostic reports including assumption checks,
+#' balance tables, and plots. The matching algorithm is selected via
+#' \code{method} (nearest / optimal / full / subclass).
 #'
 #' @param in_df Data frame containing the input data with PS already calculated (optional if in_csvpath provided)
 #' @param in_csvpath Character string. Path to input CSV file with PS already calculated (optional if in_df provided)
@@ -861,7 +1036,20 @@ check_ps_assumptions_internal <- function(data, ps_var, exposure, verbose = TRUE
 #' @param exp_value Value representing the exposed/treated group (default: 1)
 #' @param ref_value Value representing the reference/control group (default: 0)
 #' @param ps_var Character string. Name of the PS variable column in the data (default: "ps")
-#' @param ratio Integer. Matching ratio (1:k). Default is 1 for 1:1 matching.
+#' @param method Character. \pkg{MatchIt} matching method: "nearest" (default;
+#'   the previous behavior) or "subclass". "subclass" does not produce 1:k pairs
+#'   but returns matching weights (and a subclass) in a \code{.match_weights}
+#'   column; for this method the matched Table 1 and any downstream effect
+#'   estimation must be weighted by \code{.match_weights}.
+#' @param ratio Integer. Matching ratio (1:k) for "nearest". Default 1.
+#' @param min_controls,max_controls Numeric or NULL. Variable-ratio bounds passed
+#'   to \pkg{MatchIt} (\code{min.controls} / \code{max.controls}) for
+#'   "nearest". \code{NULL} (default) reproduces fixed 1:\code{ratio}.
+#' @param m_order Character or NULL. Matching order passed to \pkg{MatchIt}
+#'   (\code{m.order}) for "nearest". \code{NULL} (default) keeps the
+#'   MatchIt default.
+#' @param subclass_n Integer or NULL. Number of subclasses when
+#'   \code{method = "subclass"}. \code{NULL} (default) uses the MatchIt default.
 #' @param caliper Numeric. Caliper width on the scale set by `caliper_scale`.
 #'   Default is 0.2 (i.e. 0.2 x SD of logit(PS) under the default scale - the
 #'   Austin (2011) convention).
@@ -875,7 +1063,13 @@ check_ps_assumptions_internal <- function(data, ps_var, exposure, verbose = TRUE
 #'     \item `"raw"`: match on PS; flat caliper of `caliper` on the raw PS scale
 #'       (e.g. `caliper = 0.01`).
 #'   }
-#' @param replace Logical. Whether to match with replacement. Default is FALSE.
+#' @param replace Logical. Whether to match with replacement (method = "nearest"). Default FALSE.
+#' @param trim_method Character. PS trimming applied before matching: "none"
+#'   (default), "crump" (symmetric) or "sturmer" (asymmetric, exposure-group
+#'   percentile tails). Trimming changes the analytic population and the
+#'   interpretation of the estimand.
+#' @param trim_crump_alpha Numeric in (0, 0.5). Symmetric Crump bound (default 0.1).
+#' @param trim_sturmer_p Numeric in (0, 0.5). Sturmer tail percentile (default 0.05).
 #' @param make_crude_matched_table1 Logical. Whether to generate crude and matched Table 1 (default: FALSE).
 #' @param table1_cont_vars Character vector. Names of continuous variables for Table 1 (optional, auto-detected if NULL)
 #' @param table1_binary_vars Character vector. Names of binary variables for Table 1 (optional, auto-detected if NULL)
@@ -933,10 +1127,18 @@ create_ps_matched_cohort <- function(
     exp_value = 1,
     ref_value = 0,
     ps_var = "ps",
+    method = c("nearest", "subclass"),
     ratio = 1,
+    min_controls = NULL,
+    max_controls = NULL,
+    m_order = NULL,
+    subclass_n = NULL,
     caliper = 0.2,
     caliper_scale = c("logit_ps_sd", "raw", "raw_ps_sd"),
     replace = FALSE,
+    trim_method = c("none", "crump", "sturmer"),
+    trim_crump_alpha = 0.1,
+    trim_sturmer_p = 0.05,
     make_crude_matched_table1 = FALSE,
     table1_cont_vars = NULL,
     table1_binary_vars = NULL,
@@ -964,10 +1166,12 @@ create_ps_matched_cohort <- function(
     stop("caliper must be a single positive number")
   }
   caliper_scale <- match.arg(caliper_scale)
+  method        <- match.arg(method)
+  trim_method   <- match.arg(trim_method)
   if (exp_value == ref_value) {
     stop("exp_value and ref_value must be different")
   }
-  
+
   # Check MatchIt package
   if (!requireNamespace("MatchIt", quietly = TRUE)) {
     stop("Package 'MatchIt' is required. Please install it with: install.packages('MatchIt')")
@@ -1038,7 +1242,22 @@ create_ps_matched_cohort <- function(
     data_work <- data_work[!is.na(data_work[[ps_var]]), ]
     ps <- data_work[[ps_var]]
   }
-  
+
+  # PS trimming before matching (Crump / Sturmer); default "none" = no change
+  .keep <- .trim_ps(ps, data_work$.treat, method = trim_method,
+                    crump_alpha = trim_crump_alpha, sturmer_p = trim_sturmer_p,
+                    verbose = verbose)
+  if (!all(.keep)) {
+    data_work <- data_work[.keep, , drop = FALSE]
+    ps <- data_work[[ps_var]]
+  }
+
+  # Re-establish contiguous row identifiers after any missing-data or trimming
+  # row removal, so that MatchIt's match.matrix row labels align with positions
+  # in data_work and the .row_id-based weight merge stays correct.
+  rownames(data_work) <- NULL
+  data_work$.row_id <- seq_len(nrow(data_work))
+
   # Show sample sizes
   n_treated <- sum(data_work$.treat == 1)
   n_control <- sum(data_work$.treat == 0)
@@ -1058,8 +1277,12 @@ create_ps_matched_cohort <- function(
   # STEP 3: PERFORM MATCHING         ######################
   if (verbose) message("\nStep 3: Performing PS Matching")
   if (verbose) message("----------------------------------------")
-  if (verbose) message(sprintf("Method: Nearest Neighbor Matching"))
-  if (verbose) message(sprintf("Ratio: 1:%d", ratio))
+  method_label <- switch(method, nearest = "Nearest Neighbor",
+                         subclass = "Subclass")
+  if (verbose) message(sprintf("Method: %s Matching", method_label))
+  if (method == "nearest") {
+    if (verbose) message(sprintf("Ratio: 1:%d", ratio))
+  }
   # Resolve caliper scale -> matching distance + std.caliper flag (see caliper_scale).
   if (caliper_scale == "logit_ps_sd") {
     ps_rng <- range(data_work[[ps_var]], na.rm = TRUE)
@@ -1080,29 +1303,40 @@ create_ps_matched_cohort <- function(
     use_std_caliper <- FALSE
     caliper_desc    <- sprintf("%.3f (flat, raw PS scale)", caliper)
   }
-  if (verbose) message(sprintf("Caliper: %s", caliper_desc))
-  if (verbose) message(sprintf("With replacement: %s", ifelse(replace, "Yes", "No")))
+  if (method == "nearest") {
+    if (verbose) message(sprintf("Caliper: %s", caliper_desc))
+  }
+  if (method == "nearest") {
+    if (verbose) message(sprintf("With replacement: %s", ifelse(replace, "Yes", "No")))
+  }
   if (verbose) message(sprintf("Estimand: ATT (Average Treatment Effect on Treated)"))
-  
+
   # Create formula for MatchIt (using pre-computed PS via distance argument)
   match_formula <- stats::as.formula(paste(".treat ~ 1"))
-  
-  # Run MatchIt
-  match_out <- MatchIt::matchit(
-    formula = match_formula,
-    data = data_work,
-    method = "nearest",
+
+  # Assemble MatchIt arguments by method. caliper/std.caliper apply to
+  # nearest (not subclass); ratio/min.controls/max.controls/m.order
+  # apply to nearest; replace to nearest; subclass count to subclass.
+  mi_args <- list(
+    formula = match_formula, data = data_work, method = method,
     distance = match_distance,  # PS or logit(PS) per caliper_scale
-    ratio = ratio,
-    caliper = caliper,
-    std.caliper = use_std_caliper,
-    replace = replace,
     estimand = "ATT"
   )
-  
-  # Get matching summary
-  match_summary_obj <- summary(match_out)
-  
+  if (method == "nearest") {
+    mi_args$caliper     <- caliper
+    mi_args$std.caliper <- use_std_caliper
+  }
+  if (method == "nearest") {
+    mi_args$ratio <- ratio
+    if (!is.null(min_controls)) mi_args$min.controls <- min_controls
+    if (!is.null(max_controls)) mi_args$max.controls <- max_controls
+    if (!is.null(m_order))      mi_args$m.order      <- m_order
+  }
+  if (method == "nearest") mi_args$replace <- replace
+  if (method == "subclass" && !is.null(subclass_n)) mi_args$subclass <- subclass_n
+
+  match_out <- do.call(MatchIt::matchit, mi_args)
+
   # Extract matched data
   matched_data <- MatchIt::match.data(match_out)
   
@@ -1150,8 +1384,22 @@ create_ps_matched_cohort <- function(
         match_counter <- match_counter + 1
       }
     }
+  } else {
+    # No match.matrix (subclass): define the matched set from
+    # match.data() (units with a positive matching weight) and use the
+    # subclass as the match identifier.
+    md_ids <- as.integer(rownames(matched_data))
+    in_matched <- data_work$.row_id %in% md_ids
+    data_work$matched[in_matched] <- 1L
+    if ("subclass" %in% names(matched_data)) {
+      sub_lookup <- stats::setNames(
+        sprintf("S%05d", as.integer(matched_data$subclass)),
+        as.integer(rownames(matched_data)))
+      data_work$match_id[in_matched] <-
+        sub_lookup[as.character(data_work$.row_id[in_matched])]
+    }
   }
-  
+
   # Create final matched cohort (subset)
   matched_cohort <- data_work[data_work$matched == 1, ]
   
@@ -1253,9 +1501,9 @@ create_ps_matched_cohort <- function(
         "Unique Match Pairs"
       ),
       Value = c(
-        "Nearest Neighbor",
-        sprintf("1:%d", ratio),
-        caliper_desc,
+        sprintf("%s Matching", method_label),
+        if (method == "nearest") sprintf("1:%d", ratio) else "N/A (subclass)",
+        if (method == "nearest") caliper_desc else "N/A (subclass)",
         ifelse(replace, "Yes", "No"),
         "ATT",
         "",
@@ -1371,7 +1619,9 @@ create_ps_matched_cohort <- function(
           NULL
         })
         
-        # Generate Matched Table 1
+        # Generate Matched Table 1. For subclass the matched cohort is
+        # not 1:k, so balance must be assessed with the matching weights.
+        use_match_weights <- method == "subclass"
         if (verbose) message("    Creating matched (post-matching) Table 1...")
         matched_table1 <- tryCatch({
           build_table1(
@@ -1382,7 +1632,8 @@ create_ps_matched_cohort <- function(
             cont_vars = table1_cont_vars,
             binary_vars = table1_binary_vars,
             cat_vars = table1_cat_vars,
-            use_weights = FALSE,
+            use_weights = use_match_weights,
+            weight_var = ".match_weights",
             verbose = verbose
           )
         }, error = function(e) {
@@ -1417,10 +1668,10 @@ create_ps_matched_cohort <- function(
               stringsAsFactors = FALSE
             )
             
-            balance_comparison$Improvement <- abs(balance_comparison$Matched_Std_Diff) < 
+            balance_comparison$Improvement <- abs(balance_comparison$Matched_Std_Diff) <
               abs(balance_comparison$Crude_Std_Diff)
-            balance_comparison$Balanced <- abs(balance_comparison$Matched_Std_Diff) < 
-              (std_diff_threshold * 100)  # Convert to percentage scale if needed
+            balance_comparison$Balanced <- .is_balanced(balance_comparison$Matched_Std_Diff,
+                                                        std_diff_threshold)
             
             openxlsx::addWorksheet(wb, "Balance_Comparison")
             openxlsx::writeDataTable(wb, "Balance_Comparison", balance_comparison)
@@ -1541,7 +1792,8 @@ create_ps_matched_cohort <- function(
               crude_label = "Pre-matching", adjusted_label = "Post-matching",
               title = "Standardized Differences: Pre vs Post Matching",
               output_path = file.path(out_dir_plots, "balance_love_plot.png"),
-              colors = c("Pre-matching" = "#377eb8", "Post-matching" = "#e41a1c")
+              colors = c("Pre-matching" = "#377eb8", "Post-matching" = "#e41a1c"),
+              std_diff_threshold = std_diff_threshold
             )
           }
         }
@@ -2095,12 +2347,12 @@ create_ps_fs_weights <- function(
     sd_crude_num   <- suppressWarnings(as.numeric(combined_table$Std_diff_Crude[valid_rows]))
     sd_weighted_num <- suppressWarnings(as.numeric(combined_table$Std_diff_Weighted[valid_rows]))
     
-    n_balanced   <- sum(abs(sd_weighted_num) < (std_diff_threshold * 100), na.rm = TRUE)
+    n_balanced   <- sum(.is_balanced(sd_weighted_num, std_diff_threshold), na.rm = TRUE)
     n_total_vars <- sum(!is.na(sd_weighted_num))
     n_improved   <- sum(abs(sd_weighted_num) < abs(sd_crude_num), na.rm = TRUE)
-    
-    if (verbose) message(sprintf("\n  Variables balanced (|Std Diff| < %.0f%%): %d/%d",
-                                 std_diff_threshold * 100, n_balanced, n_total_vars))
+
+    if (verbose) message(sprintf("\n  Variables balanced (|Std Diff| < %.2f): %d/%d",
+                                 std_diff_threshold, n_balanced, n_total_vars))
     if (verbose) message(sprintf("  Variables with improved balance: %d/%d", n_improved, n_total_vars))
     
     results$combined_table <- combined_table
@@ -2155,7 +2407,8 @@ create_ps_fs_weights <- function(
         output_path = file.path(out_dir_plots, paste0(plot_prefix, "_balance.png")),
         colors = c("Unweighted" = "darkorange1", "Weighted" = "dodgerblue"),
         shapes = c("Unweighted" = 17, "Weighted" = 16),
-        use_absolute = TRUE
+        use_absolute = TRUE,
+        std_diff_threshold = std_diff_threshold
       )
     }
     
@@ -2293,8 +2546,8 @@ create_ps_fs_weights <- function(
                           "COMBINED BALANCE TABLE: Crude vs Fine Stratification Weighted",
                           startRow = 1)
       openxlsx::writeData(wb, "Balance Table",
-                          sprintf("Variables balanced (|Std Diff| < %.0f%%): %d/%d | Improved: %d/%d",
-                                  std_diff_threshold * 100, n_balanced, n_total_vars, n_improved, n_total_vars),
+                          sprintf("Variables balanced (|Std Diff| < %.2f): %d/%d | Improved: %d/%d",
+                                  std_diff_threshold, n_balanced, n_total_vars, n_improved, n_total_vars),
                           startRow = 2)
       openxlsx::writeDataTable(wb, "Balance Table", combined_table, startRow = 4)
     }

@@ -23,9 +23,24 @@
 #'   instead of throwing error (default: FALSE). The categorical screen unions levels
 #'   across the two exposure groups, so a level present in one group but absent in the
 #'   other is counted as n = 0 and flagged by the cnt < 5 rule.
+#' @param separation_action Character. Action taken when the post-fit
+#'   joint-design (quasi-)separation diagnostic flags the PS model:
+#'   \code{"warn"} (default; emit a warning and continue), \code{"error"}
+#'   (stop with an error), or \code{"ignore"} (proceed silently; base-R glm
+#'   separation warnings are suppressed too). The diagnostic is a base-R
+#'   heuristic (glm non-convergence, fitted probabilities pinned within 1e-8 of
+#'   0 or 1, or a large coefficient paired with a large standard error) that
+#'   complements the marginal, per-variable extreme-distribution screen
+#'   (\code{exclude_vars_w_extreme_distribution}), which is blind to separation
+#'   arising jointly across covariates. Choosing \code{"warn"} preserves the
+#'   prior return value and control flow.
 #' @param verbose Logical. Print progress messages (default TRUE).
 #'
-#' @return A data frame with the PS column added. Also saves to CSV if path specified.
+#' @return A data frame with the PS column added (with the same number of rows
+#'   as the input). Rows with a missing exposure value or a missing PS-model
+#'   covariate are excluded from model fitting (\code{na.action = na.exclude})
+#'   and receive \code{NA} for the propensity score, with a warning; all other
+#'   rows are unchanged. Also saves to CSV if a path is specified.
 #'
 #' @section Side Effects:
 #' \itemize{
@@ -80,8 +95,11 @@ estimate_ps <- function(
     ps_var = "ps",
     interactions = NULL,
     exclude_vars_w_extreme_distribution = FALSE,
+    separation_action = c("warn", "error", "ignore"),
     verbose = TRUE) {
   
+  separation_action <- match.arg(separation_action)
+
   if (is.null(in_df) && is.null(in_csvpath)) {
     stop("Either in_df or in_csvpath must be provided")
   }
@@ -354,19 +372,87 @@ estimate_ps <- function(
   if (verbose) message("Step 3: Fitting logistic regression model")
   if (verbose) message("----------------------------------------")
   
-  ps_model <- stats::glm(formula_obj, 
-                         data = data_work, 
-                         family = stats::binomial(link = "logit"))
-  
-  # Calculate propensity scores
+  # Fit with na.action = na.exclude so predict() returns a full-length vector
+  # with NA in the rows glm dropped (a missing exposure value or a missing
+  # PS-model covariate). This preserves nrow(data_work) and keeps the PS column
+  # row-aligned; the previous default (na.omit) returned a short vector and the
+  # assignment below errored / mis-recycled.
+  #
+  # Separation-related base-R warnings ("fitted probabilities numerically 0 or 1
+  # occurred", "algorithm did not converge") are muffled here and replaced by the
+  # consolidated, action-controlled separation diagnostic below. glm's
+  # 0/1-fitted threshold (~2.2e-15) is stricter than the diagnostic's eps (1e-8)
+  # and its convergence flag is read directly, so muffling cannot silently drop a
+  # signal: whenever glm would warn, .detect_ps_separation() also flags it.
+  ps_model <- withCallingHandlers(
+    stats::glm(formula_obj,
+               data = data_work,
+               family = stats::binomial(link = "logit"),
+               na.action = stats::na.exclude),
+    warning = function(w) {
+      if (grepl("fitted probabilities numerically 0 or 1|did not converge",
+                conditionMessage(w))) {
+        invokeRestart("muffleWarning")
+      }
+    }
+  )
+
+  # Calculate propensity scores (na.exclude -> NA-padded to full data length)
   data_work[[ps_var]] <- stats::predict(ps_model, type = "response")
-  
+
+  # --- NA handling: report rows dropped due to missing model variables ---
+  # model.frame() holds only the complete-case rows actually used by glm; the
+  # difference from the input row count is the number of rows set to NA above.
+  n_orig    <- nrow(data_work)
+  n_used    <- nrow(stats::model.frame(ps_model))
+  n_missing <- n_orig - n_used
+  if (n_missing > 0) {
+    warning(sprintf(
+      paste0("Rows with missing exposure or PS model covariates were excluded ",
+             "from model fitting; PS is NA for those rows (%d of %d rows excluded)."),
+      n_missing, n_orig))
+    if (verbose) message(sprintf(
+      paste0("Note: %d of %d row(s) excluded from PS model fitting due to missing ",
+             "exposure/covariate values; PS is NA for those rows."),
+      n_missing, n_orig))
+  }
+
+  # --- Joint-design (quasi-)separation diagnostic (post-fit) ---
+  # Step 0 screens each covariate marginally and is blind to separation produced
+  # by a linear combination of covariates across the full design matrix. This
+  # post-fit check complements Step 0 and the looser extreme-PS check
+  # (PS < 0.01 / > 0.99) further below; the latter is retained as-is.
+  sep_result        <- .detect_ps_separation(ps_model)
+  sep_summary_value <- if (sep_result$suspected) {
+    paste0("Suspected (", paste(sep_result$reasons, collapse = "; "), ")")
+  } else {
+    "No separation detected"
+  }
+  if (sep_result$suspected) {
+    sep_msg <- sprintf(
+      paste0("PS model shows suspected separation or near-positivity violation (%s). ",
+             "Coefficient/SE estimates may be unstable and some covariate strata may ",
+             "lack overlap. Review overlap/positivity for the affected covariates; ",
+             "consider Firth/penalized logistic regression or removing/collapsing the ",
+             "offending term(s)."),
+      paste(sep_result$reasons, collapse = "; "))
+    if (separation_action == "error") {
+      stop(sep_msg)
+    } else if (separation_action == "warn") {
+      warning(sep_msg)
+    }
+    # "ignore": stay silent (glm's own separation warnings were muffled above)
+    if (verbose && separation_action != "error") message("\n", sep_msg)
+  } else if (verbose) {
+    message("\n[OK] No (quasi-)separation detected in PS model")
+  }
+
   # Calculate C-statistic
   c_stat_result <- calc_c_statistic(data_work[[exposure_var]], data_work[[ps_var]], label = "PS Model", verbose = verbose)
   c_stat <- if (!is.null(c_stat_result)) c_stat_result$c_stat else NA_real_
-  
+
   if (verbose) message(sprintf("Model converged: %s", ps_model$converged))
-  if (verbose) message(sprintf("Number of observations: %d", nrow(stats::model.frame(ps_model))))
+  if (verbose) message(sprintf("Number of observations (used in PS model): %d", n_used))
   if (verbose) message(sprintf("C-statistic: %.3f", c_stat))
   
   # Show PS distribution summary
@@ -449,9 +535,12 @@ estimate_ps <- function(
     # Sheet 2: PS Model Summary (2-column metadata table)
     openxlsx::addWorksheet(wb, "PS Model Summary")
     
-    n_total <- nrow(stats::model.frame(ps_model))
-    n_exp <- sum(data_work[[exposure_var]] == 1, na.rm = TRUE)
-    n_ref <- sum(data_work[[exposure_var]] == 0, na.rm = TRUE)
+    # Row accounting kept consistent: original = used + excluded, and
+    # exposed + reference are counted among the rows actually used in the model
+    # (rows with a non-NA PS), so they sum to n_used rather than to n_orig.
+    used_rows <- !is.na(data_work[[ps_var]])
+    n_exp <- sum(data_work[[exposure_var]] == 1 & used_rows, na.rm = TRUE)
+    n_ref <- sum(data_work[[exposure_var]] == 0 & used_rows, na.rm = TRUE)
     
     # PS distribution quantiles
     ps_vals <- data_work[[ps_var]]
@@ -463,10 +552,13 @@ estimate_ps <- function(
     }
     
     summary_labels <- c(
-      "Number of observations (Total)",
-      "Number of observations (Exposure)",
-      "Number of observations (Reference)",
+      "Number of observations (Original / input rows)",
+      "Number of observations (Used in PS model)",
+      "Number of observations (Excluded: missing exposure or model covariates)",
+      "Number exposed (used in PS model)",
+      "Number reference (used in PS model)",
       "PS Model Converged",
+      "PS model separation check",
       "PS Model C-statistic",
       "PS Model AIC",
       "PS Min",
@@ -486,10 +578,13 @@ estimate_ps <- function(
     )
     
     summary_values <- c(
-      as.character(n_total),
+      as.character(n_orig),
+      as.character(n_used),
+      as.character(n_missing),
       as.character(n_exp),
       as.character(n_ref),
       as.character(ps_model$converged),
+      sep_summary_value,
       sprintf("%.3f", c_stat),
       sprintf("%.1f", stats::AIC(ps_model)),
       sprintf("%.6f", ps_q[[1]]),
@@ -539,4 +634,61 @@ estimate_ps <- function(
   
   # Return the data with PS added
   return(invisible(data_work))
+}
+
+#  PS Separation Diagnostic (internal) ################
+#' Heuristically detect (quasi-)complete separation in a fitted PS GLM
+#'
+#' Base-R-only post-fit diagnostic for the joint (whole-design-matrix)
+#' separation that the marginal, per-variable pre-fit screen in
+#' \code{estimate_ps()} cannot see. It flags three classic signatures of an
+#' infinite / flat-likelihood logistic MLE. It does \emph{not} prove
+#' mathematical complete separation: fitted probabilities pinned at 0/1 can also
+#' reflect a very strong finite association or a practical positivity violation,
+#' so the reported condition is "suspected", not "confirmed".
+#'
+#' @param ps_model A fitted \code{stats::glm} binomial model.
+#' @param eps Numeric. Fitted probabilities within \code{eps} of 0 or 1 are
+#'   treated as a separation signal (default 1e-8). This is looser than glm's
+#'   internal ~2.2e-15 threshold, so glm's own 0/1 warning always implies this
+#'   signal (no signal is silently lost when that warning is muffled).
+#' @param coef_thr,se_thr Numeric. A non-intercept coefficient is treated as a
+#'   separation signal when \code{abs(estimate) > coef_thr} \emph{and}
+#'   \code{SE > se_thr} (the large-coefficient-with-large-SE signature of a flat
+#'   likelihood; defaults 15 and 10). Requiring both reduces false positives
+#'   from genuinely large but finite effects.
+#' @return A list with \code{suspected} (logical) and \code{reasons} (character
+#'   vector naming the signals that fired; empty when none did).
+#' @keywords internal
+#' @noRd
+.detect_ps_separation <- function(ps_model, eps = 1e-8, coef_thr = 15, se_thr = 10) {
+  reasons <- character(0)
+
+  # Signal 1: non-convergence (sensitive, not specific)
+  if (!isTRUE(ps_model$converged)) {
+    reasons <- c(reasons, "glm did not converge")
+  }
+
+  # Signal 2: fitted probabilities pinned at 0/1. Use $fitted.values, which is
+  # complete-case and NA-free even under na.action = na.exclude.
+  p <- ps_model$fitted.values
+  if (length(p) > 0 && any(p <= eps | p >= 1 - eps, na.rm = TRUE)) {
+    reasons <- c(reasons, sprintf("fitted probability within %g of 0 or 1", eps))
+  }
+
+  # Signal 3: large |coefficient| together with a large SE (flat-likelihood
+  # signature). Guard against summaries lacking the expected columns.
+  cs <- tryCatch(stats::coef(summary(ps_model)), error = function(e) NULL)
+  if (!is.null(cs) && all(c("Estimate", "Std. Error") %in% colnames(cs))) {
+    keep <- rownames(cs) != "(Intercept)"
+    est  <- cs[keep, "Estimate"]
+    se   <- cs[keep, "Std. Error"]
+    if (length(est) > 0 && any(abs(est) > coef_thr & se > se_thr, na.rm = TRUE)) {
+      reasons <- c(reasons,
+                   sprintf("large |coefficient| (> %g) with large SE (> %g)",
+                           coef_thr, se_thr))
+    }
+  }
+
+  list(suspected = length(reasons) > 0, reasons = reasons)
 }

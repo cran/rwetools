@@ -14,7 +14,8 @@ create_love_plot(
   output_path,
   colors = NULL,
   shapes = NULL,
-  use_absolute = FALSE
+  use_absolute = FALSE,
+  std_diff_threshold = 0.1
 )
 }
 \arguments{
@@ -39,6 +40,11 @@ adjusted_label as names giving ggplot2 shape codes (e.g., 16 = filled circle,
 17 = filled triangle). If NULL, ggplot2 default shapes are used.}
 
 \item{use_absolute}{Logical. Plot absolute values of std diff? (default FALSE)}
+
+\item{std_diff_threshold}{Numeric. Balance threshold on the raw standardized
+difference scale (default 0.1) at which the dashed reference line(s) are
+drawn. Inputs are expected on the raw (0-1) SMD scale produced by
+\code{\link{build_table1}}, not a percentage.}
 }
 \value{
 Invisibly returns a \code{ggplot} object, or \code{invisible(NULL)}

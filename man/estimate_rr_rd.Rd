@@ -5,201 +5,130 @@
 \title{Estimate Risk Ratios and Risk Differences using Cumulative Incidence}
 \usage{
 estimate_rr_rd(
-  in_df_unwt = NULL,
-  in_df_wted = NULL,
+  in_df_crude = NULL,
+  in_df_weight = NULL,
+  in_df_match = NULL,
   out_xlsxpath = NULL,
   exposure_var = "exp",
   exp_value = 1,
   ref_value = 0,
   outcome_var = NULL,
-  weight_var = NULL,
-  survival_time = NULL,
+  followuptime_var = NULL,
   time_unit = c("days", "months", "years"),
   rr_rd_at_timepoint = 365,
-  rr_rd_per_individuals = 1000,
+  risk_per_individuals = 1000,
   confidence_level = 0.95,
-  conf_int_method = c("bootstrap", "analytical", "both"),
   risk_estimator = c("KM", "AJ"),
-  competing_event_var = NULL,
-  bootstrap_count = 500,
-  stratify_by = NULL,
-  n_cores = NULL,
-  seed = NULL,
+  if_aj_competing_event_var = NULL,
+  stratification_var = NULL,
+  if_weight_weight_var = NULL,
+  if_match_match_id = NULL,
+  if_bootstrap_count = NULL,
+  if_bootstrap_n_cores = NULL,
+  if_bootstrap_seed = NULL,
   readme_text = NULL,
   verbose = TRUE
 )
 }
 \arguments{
-\item{in_df_unwt}{Data frame for unweighted analysis. Set to NULL to skip unweighted analysis.
-This could be the full cohort, matched data, or any specific population.}
+\item{in_df_crude}{Data frame for the crude block, or NULL.}
 
-\item{in_df_wted}{Data frame for weighted analysis. Set to NULL to skip weighted analysis.
-This could be the same as unweighted data or a different population (e.g., trimmed).}
+\item{in_df_weight}{Data frame for the weighted block (requires
+\code{if_weight_weight_var}); cannot be combined with \code{in_df_match}.}
 
-\item{out_xlsxpath}{Character string. Path for output Excel file with all results.}
+\item{in_df_match}{Data frame for the matched block; cannot be combined
+with \code{in_df_weight}.}
 
-\item{exposure_var}{Character string. Name of binary exposure/treatment variable (default: "exp").}
+\item{out_xlsxpath}{Character path for an Excel output file, or NULL.}
 
-\item{exp_value}{Value representing the exposed/treated group (default: 1).}
+\item{exposure_var}{Character. Binary exposure variable name.}
 
-\item{ref_value}{Value representing the reference/control group (default: 0).}
+\item{exp_value, ref_value}{Values of \code{exposure_var} for the exposed
+and reference groups.}
 
-\item{outcome_var}{Character string. Name of the event indicator variable (0=censored, 1=event).}
+\item{outcome_var}{Character. Event indicator (0 = censored, 1 = event).}
 
-\item{weight_var}{Character string. Name of weight variable in the weighted dataset.
-Required when \code{in_df_wted} is not NULL.}
+\item{followuptime_var}{Character. Follow-up time variable (required).}
 
-\item{survival_time}{Character string. Name of survival/follow-up time variable (required).}
+\item{time_unit}{"days", "months" or "years" -- the unit of
+\code{followuptime_var} and \code{rr_rd_at_timepoint}.}
 
-\item{time_unit}{Character string. Unit of time for survival analysis: "days", "months", or "years".
-Default: "days".}
+\item{rr_rd_at_timepoint}{Numeric timepoint for the cumulative incidence
+(same unit as \code{followuptime_var}). Default 365.}
 
-\item{rr_rd_at_timepoint}{Numeric. Timepoint at which to calculate cumulative incidence.
-Units depend on \code{time_unit} parameter. Default: 365.}
+\item{risk_per_individuals}{Denominator for expressing risks and risk
+differences (default 1000).}
 
-\item{rr_rd_per_individuals}{Numeric. Denominator for expressing risk and risk difference.
-Default: 1000.}
+\item{confidence_level}{Confidence level in (0, 1). Default 0.95.}
 
-\item{confidence_level}{Numeric. Confidence level for confidence intervals (default: 0.95).}
+\item{risk_estimator}{"KM" (Kaplan-Meier) or "AJ" (Aalen-Johansen;
+requires \code{if_aj_competing_event_var}). Aliases "Kaplan-Meier" /
+"Aalen-Johansen" are accepted.}
 
-\item{conf_int_method}{Character string. Method for confidence interval estimation:
-\describe{
-\item{"bootstrap"}{Percentile bootstrap CIs only.}
-\item{"analytical"}{Analytical CIs only (delta method for RR, Greenwood-based for RD).
-\code{bootstrap_count} is ignored.}
-\item{"both"}{Compute both bootstrap and analytical CIs.}
-}
-Default: "bootstrap".}
+\item{if_aj_competing_event_var}{Character or NULL. Competing-event
+indicator (1 = competing event) for the AJ estimator; required with
+\code{risk_estimator = "AJ"}, ignored (message) with "KM".}
 
-\item{risk_estimator}{Character string. Cumulative incidence estimator:
-\describe{
-\item{"KM"}{Kaplan-Meier (1 - survival). Aliases: "Kaplan-Meier", "kaplan-meier".}
-\item{"AJ"}{Aalen-Johansen cumulative incidence function for competing risks.
-Requires \code{competing_event_var}. Aliases: "Aalen-Johansen", "aalen-johansen".}
-}
-Default: "KM".}
+\item{stratification_var}{Character or NULL. Direct standardization
+variable (stratum weights from the total population).}
 
-\item{competing_event_var}{Character string. Name of the competing event indicator variable
-(1 = competing event occurred, e.g., death; 0 = no competing event).
-Required when \code{risk_estimator = "AJ"}. Ignored when \code{risk_estimator = "KM"}.
-The multi-state status is constructed internally:
-\code{outcome_var == 1} -> event of interest (1),
-\code{outcome_var == 0 & competing_event_var == 1} -> competing event (2),
-\code{outcome_var == 0 & competing_event_var == 0} -> censored (0).}
+\item{if_weight_weight_var}{Character or NULL. Weight column in
+\code{in_df_weight}; required with that block, ignored (message)
+otherwise.}
 
-\item{bootstrap_count}{Integer. Number of bootstrap iterations for CI estimation (default: 500).
-Ignored when \code{conf_int_method = "analytical"}.}
+\item{if_match_match_id}{Character or NULL. Match-set id column in
+\code{in_df_match}; enables pair-level bootstrap resampling. Without it
+the matched block uses row resampling (a message is emitted). Ignored
+(message) without \code{in_df_match}.}
 
-\item{stratify_by}{Character string. Name of stratification variable for direct standardization
-(default: NULL). When specified, the function:
-(1) calculates stratum weights (w_k = N_k / N_total) from the total population,
-(2) computes risk within each stratum using the selected estimator,
-(3) standardizes: Risk_std = Sum(Risk_k * w_k),
-(4) derives RR and RD from standardized risks.
-Bootstrap CIs use stratified resampling (within each stratum).
-Analytical SEs use Greenwood formula: Var(Risk_std) = Sum(w_k^2 * Var(R_k)).}
+\item{if_bootstrap_count}{Integer or NULL. When supplied, adds percentile
+bootstrap CIs (the \code{*_Boot} columns). Fixed-weight (frozen) only.}
 
-\item{n_cores}{Integer. Number of CPU cores for parallel bootstrap. Default uses all
-available cores minus 1. Set to 1 to disable parallelization.
-Ignored when \code{conf_int_method = "analytical"}.}
+\item{if_bootstrap_n_cores}{Integer or NULL. Cores for the bootstrap
+(NULL = all minus one); ignored (message) without
+\code{if_bootstrap_count}.}
 
-\item{seed}{Integer or NULL. Optional seed for the bootstrap random number
-generator. When NULL (default), the caller's current RNG state
-is used and not modified. When an integer is supplied, it is
-passed to \code{\link[parallel]{clusterSetRNGStream}} (parallel)
-or \code{\link{set.seed}} (sequential) to make the bootstrap
-CIs reproducible. In the sequential case the caller's
-\code{.Random.seed} is saved and restored on exit.
-Ignored when \code{conf_int_method = "analytical"}.}
+\item{if_bootstrap_seed}{Integer or NULL. Bootstrap RNG seed; ignored
+(message) without \code{if_bootstrap_count}.}
 
-\item{readme_text}{Character string. Optional message to include in README sheet of Excel output.}
+\item{readme_text}{Optional README text for the Excel output.}
 
 \item{verbose}{Logical. Print progress messages (default TRUE).}
 }
 \value{
-Invisibly returns a list containing:
-\describe{
-\item{estimates}{Data frame with RR, RD, confidence intervals, and
-\code{Risk_Estimator} (\code{"KM"} or \code{"AJ"}).}
-\item{cumulative_incidence}{Data frame with cumulative incidence by group.
-Columns: \code{Risk} (probability), \code{Risk_LCI} / \code{Risk_UCI}
-(log-transformed CI), \code{Risk_SE} (SE on 0-1 scale),
-\code{Risk_Var} (variance), \code{RiskperN} (scaled risk),
-\code{RiskperN_LCI} / \code{RiskperN_UCI} (scaled CI),
-and \code{Risk_Estimator}.}
-\item{stratum_details}{(if \code{stratify_by} specified) Data frame with
-stratum-level results and \code{Risk_Estimator}.}
-\item{unweighted_bootstrap}{(if applicable) Bootstrap results matrix.}
-\item{weighted_bootstrap}{(if applicable) Bootstrap results matrix.}
-}
-Also saves results to Excel file when \code{out_xlsxpath} is provided.
+Invisibly, a list with \code{estimates} (one row per block; both
+analytical and \code{*_Boot} columns), \code{cumulative_incidence}
+(per-arm risks with cloglog CIs), \code{stratum_details} (when
+standardized), and per-block bootstrap matrices when run.
 }
 \description{
-This function estimates risk ratios (RR) and risk differences (RD) for time-to-event outcomes
-using cumulative incidence at a specified timepoint.
-Two estimators are supported:
-\describe{
-\item{Kaplan-Meier (KM)}{Standard 1 - S(t) cumulative incidence. Appropriate when there
-are no competing risks or competing events are treated as censored.}
-\item{Aalen-Johansen (AJ)}{Cumulative incidence function accounting for competing risks.
-Produces unbiased risk estimates in the presence of competing events by treating them
-as a separate absorbing state rather than censoring. Requires a competing event indicator
-via \code{competing_event_var}. Uses multi-state \code{\link[survival]{survfit}} internally
-(\code{survival} >= 3.1).}
-}
-It can perform unweighted analysis, weighted (propensity score adjusted) analysis, or both,
-using potentially different datasets for each analysis type.
-Confidence intervals can be estimated using bootstrapping, analytical (delta method / Greenwood),
-or both.
+Estimates risks (cumulative incidence), risk ratios (RR) and risk
+differences (RD) at a specified timepoint for up to two analysis blocks:
+a crude block (\code{in_df_crude}) plus either a weighted block
+(\code{in_df_weight}, e.g. IPTW) or a matched block (\code{in_df_match}).
+Two estimators are supported: Kaplan-Meier (\code{"KM"}, 1 - S(t)) and
+Aalen-Johansen (\code{"AJ"}, the cumulative incidence function under
+competing risks; requires \code{if_aj_competing_event_var}).
 }
 \details{
-When \code{stratify_by} is specified, the function performs direct standardization:
-stratum-specific risks are combined using the total population distribution as the standard.
-Bootstrap resampling is stratified to preserve stratum structure.
-
-The function proceeds as follows:
-\enumerate{
-\item Fits cumulative incidence curves by exposure group using the selected estimator
-\item Extracts cumulative incidence (risk) at the specified timepoint
-\item Computes Risk Ratio (RR) = Risk_exposed / Risk_reference
-\item Computes Risk Difference (RD) = Risk_exposed - Risk_reference
-\item Estimates confidence intervals using the selected method
-}
-
-\strong{Kaplan-Meier (KM) estimator:}
-Risk = 1 - S(t), where S(t) is the KM survival estimate. Competing events, if present,
-are treated as censored, which can overestimate cumulative incidence.
-
-\strong{Aalen-Johansen (AJ) estimator:}
-Cumulative incidence function from a multi-state model via
-\code{\link[survival]{survfit}} with \code{Surv(time, factor(status))}.
-Competing events are modelled as a separate absorbing state, producing
-unbiased risk estimates. Variance is based on the counting-process
-variance estimator (Aalen, 1978).
-
-\strong{Analytical CI method:}
+Analytical confidence intervals are always computed with fixed methods:
 \itemize{
-\item RR: delta method on log scale. Var(log(RR)) = Var(R_exp)/R_exp^2 + Var(R_ref)/R_ref^2.
-CI = exp(log(RR) +/- z * SE(log(RR))).
-\item RD: Var(RD) = (Var(R_exp) + Var(R_ref)) * per_n^2. CI = RD +/- z * SE(RD).
-\item Variance from \code{\link[survival]{survfit}} (Greenwood for KM, counting-process for AJ).
+\item Risk / CIF: complementary log-log (cloglog) interval on the final
+(standardized/weighted) estimate with its combined SE
+(Kalbfleisch & Prentice 2002) -- for a crude KM risk this reproduces
+\code{survfit(conf.type = "log-log")} exactly. A risk of exactly 0 or
+1 has no defined cloglog CI: NA is returned and a message recommends
+the bootstrap.
+\item RD: normal-Wald with Greenwood (KM) / counting-process (AJ)
+variance. RR: delta method on the log scale.
+\item Standardization (with \code{stratification_var}): stratum weights
+w_k = N_k / N_total; \code{Var(Risk_std) = Sum(w_k^2 Var(R_k))}.
 }
-
-\strong{Bootstrap CI method:}
-Percentile bootstrap with parallel computation via
-\code{\link[parallel]{parLapply}} using L'Ecuyer-CMRG random number streams.
-Pass an integer to \code{seed} for reproducible bootstrap CIs; by default
-(\code{seed = NULL}) the caller's current RNG state is used and not modified.
-
-When \code{stratify_by} is specified (Direct Standardization):
-\enumerate{
-\item Stratum weights w_k = N_k / N_total from the total population
-\item Within each stratum k, risk R_\{ik\} is computed for each exposure group i
-\item Standardized risk: Risk_std_i = Sum_k(R_\{ik\} * w_k)
-\item RR = Risk_std_1 / Risk_std_0; RD = Risk_std_1 - Risk_std_0
-\item Analytical SE: Var(Risk_std_i) = Sum_k(w_k^2 * Var(R_\{ik\}))
-\item Bootstrap CIs use stratified resampling with fixed original population weights
-}
+The percentile bootstrap is opt-in via \code{if_bootstrap_count} and is
+ALWAYS fixed-weight ("frozen"): analysis weights and stratum shares are
+held at their original values (PS-estimation uncertainty is not
+propagated); matched blocks resample matched sets by
+\code{if_match_match_id}.
 }
 \section{Side Effects}{
 
@@ -211,38 +140,34 @@ Creates the output directory and writes an Excel workbook when
 csv_path <- system.file("extdata", "sample_data.csv", package = "rwetools")
 df <- read.csv(csv_path)
 
-# KM with analytical CIs (fast, no bootstrap)
-result <- estimate_rr_rd(
-  in_df_unwt            = df,
-  in_df_wted            = NULL,
-  exposure_var          = "exposure",
-  outcome_var           = "outcome",
-  survival_time         = "follow_up_days",
-  time_unit             = "days",
-  rr_rd_at_timepoint    = 365,
-  rr_rd_per_individuals = 1000,
-  conf_int_method       = "analytical",
-  verbose               = FALSE
+# Crude KM risks with analytical (cloglog / Wald / log-delta) CIs
+res <- estimate_rr_rd(
+  in_df_crude          = df,
+  exposure_var         = "exposure",
+  outcome_var          = "outcome",
+  followuptime_var     = "follow_up_days",
+  time_unit            = "days",
+  rr_rd_at_timepoint   = 365,
+  risk_per_individuals = 1000,
+  verbose              = FALSE
 )
-result$estimates
+res$estimates
 
 \donttest{
-# KM with bootstrap CIs (slow) and competing risk (AJ estimator)
-result2 <- estimate_rr_rd(
-  in_df_unwt            = df,
-  in_df_wted            = NULL,
-  exposure_var          = "exposure",
-  outcome_var           = "outcome",
-  survival_time         = "follow_up_days",
-  time_unit             = "days",
-  rr_rd_at_timepoint    = 365,
-  rr_rd_per_individuals = 1000,
-  risk_estimator        = "AJ",
-  competing_event_var   = "competing_event",
-  conf_int_method       = "bootstrap",
-  bootstrap_count       = 100,
-  n_cores               = 1,
-  verbose               = FALSE
+# AJ (competing risks) + bootstrap CIs
+res2 <- estimate_rr_rd(
+  in_df_crude               = df,
+  exposure_var              = "exposure",
+  outcome_var               = "outcome",
+  followuptime_var          = "follow_up_days",
+  rr_rd_at_timepoint        = 365,
+  risk_estimator            = "AJ",
+  if_aj_competing_event_var = "competing_event",
+  if_bootstrap_count        = 100,
+  if_bootstrap_n_cores      = 1,
+  if_bootstrap_seed         = 2026,
+  verbose                   = FALSE
 )
+res2$estimates
 }
 }

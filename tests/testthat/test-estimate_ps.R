@@ -119,3 +119,128 @@ test_that("estimate_ps errors on zero-count level when auto-exclude is off", {
     "extreme distribution"
   )
 })
+
+# ---------------------------------------------------------------------------
+# NA handling (audit: "Fix estimate_ps() to handle NA explicitly").
+# glm()'s previous default (na.omit) returned a predict() vector shorter than
+# the data, so the PS column assignment crashed / mis-recycled. The fix uses
+# na.action = na.exclude so predict() pads back to the full input length with
+# NA in the dropped rows, preserving nrow and row alignment.
+#
+# Deterministic toy: 60 rows (exposure 30/30), well-overlapping cont1 and a
+# balanced binary cat1 (no separation, no sparse level), with cont1 set to NA
+# at rows 5 (exposed) and 40 (reference).
+.toy_na_df <- function() {
+  exposure <- c(rep(1L, 30), rep(0L, 30))
+  cont1    <- c(seq(0.10, 3.00, length.out = 30),
+                seq(0.05, 2.95, length.out = 30))
+  cat1     <- rep(c(0L, 1L), times = 30)
+  df <- data.frame(exposure = exposure, cont1 = cont1, cat1 = cat1,
+                   stringsAsFactors = FALSE)
+  df$cont1[c(5L, 40L)] <- NA  # inject missingness at known rows
+  df
+}
+
+test_that("estimate_ps handles NA: nrow preserved and PS is NA on missing rows", {
+  toy_df       <- .toy_na_df()
+  missing_rows <- which(is.na(toy_df$cont1))   # c(5, 40)
+
+  expect_warning(
+    result <- estimate_ps(
+      in_df        = toy_df,
+      exposure_var = "exposure",
+      class_vars   = "cat1",
+      cont_vars    = "cont1",
+      verbose      = FALSE
+    ),
+    "missing"
+  )
+
+  # Row count preserved
+  expect_equal(nrow(result), nrow(toy_df))
+  expect_length(result$ps, nrow(toy_df))
+  # PS is NA exactly at the rows with a missing covariate
+  expect_true(all(is.na(result$ps[missing_rows])))
+  expect_false(any(is.na(result$ps[-missing_rows])))
+  # All other PS values are finite probabilities
+  expect_true(all(result$ps[-missing_rows] >= 0 & result$ps[-missing_rows] <= 1))
+})
+
+# ---------------------------------------------------------------------------
+# Joint-design (quasi-)separation diagnostic
+# (audit: "PS_estimation (a) joint-design separation check").
+# The marginal Step-0 screen is blind to separation arising jointly across
+# covariates. Cube design: the 8 corners of {-1,1}^3, exposure = 1 iff
+# x1 + x2 + x3 > 0. Each covariate's marginal SMD is ~1.13 (< 1.5, so Step 0
+# passes), but x1 + x2 + x3 separates exposure perfectly, so glm diverges and
+# the post-fit diagnostic must flag it.
+.toy_cube_separation_df <- function(reps = 6L) {
+  corners <- expand.grid(x1 = c(-1, 1), x2 = c(-1, 1), x3 = c(-1, 1))
+  s <- corners$x1 + corners$x2 + corners$x3
+  corners$exposure <- ifelse(s > 0, 1L, 0L)
+  df <- corners[rep(seq_len(nrow(corners)), each = reps),
+                c("exposure", "x1", "x2", "x3")]
+  rownames(df) <- NULL
+  df
+}
+
+test_that("estimate_ps warns on joint separation (separation_action = 'warn')", {
+  cube_df <- .toy_cube_separation_df()
+
+  # Cube passes Step 0 (no extreme-distribution error) yet jointly separates.
+  expect_warning(
+    estimate_ps(
+      in_df             = cube_df,
+      exposure_var      = "exposure",
+      cont_vars         = c("x1", "x2", "x3"),
+      separation_action = "warn",
+      verbose           = FALSE
+    ),
+    "separation"
+  )
+})
+
+test_that("estimate_ps errors on joint separation (separation_action = 'error')", {
+  cube_df <- .toy_cube_separation_df()
+
+  expect_error(
+    estimate_ps(
+      in_df             = cube_df,
+      exposure_var      = "exposure",
+      cont_vars         = c("x1", "x2", "x3"),
+      separation_action = "error",
+      verbose           = FALSE
+    ),
+    "separation|near-positivity"
+  )
+})
+
+test_that("estimate_ps stays silent on separation (separation_action = 'ignore')", {
+  cube_df <- .toy_cube_separation_df()
+
+  # 'ignore' must suppress BOTH the consolidated diagnostic and the underlying
+  # base-R glm separation warnings (muffled via withCallingHandlers).
+  expect_no_warning(
+    estimate_ps(
+      in_df             = cube_df,
+      exposure_var      = "exposure",
+      cont_vars         = c("x1", "x2", "x3"),
+      separation_action = "ignore",
+      verbose           = FALSE
+    )
+  )
+})
+
+test_that("estimate_ps does not warn on clean, non-separated data (backward compat)", {
+  # Complete data with no separation must behave exactly as before: no missing
+  # warning and no separation warning under the default action.
+  expect_no_warning(
+    estimate_ps(
+      in_df        = small_df,
+      exposure_var = "exposure",
+      class_vars   = class_vars,
+      cont_vars    = cont_vars,
+      verbose      = FALSE
+    )
+  )
+})
