@@ -14,6 +14,37 @@ test_that("estimate_ps returns data.frame with PS column", {
   expect_true(all(result$ps >= 0 & result$ps <= 1))
 })
 
+test_that("estimate_ps preserves labels and honors reversed exposure direction", {
+  labelled <- small_df
+  labelled$exposure <- ifelse(labelled$exposure == 1, "GLP1", "DPP4")
+  labelled$.check_id <- seq_len(nrow(labelled))
+
+  labelled_result <- estimate_ps(
+    in_df = labelled, exposure_var = "exposure",
+    exp_value = "GLP1", ref_value = "DPP4",
+    class_vars = class_vars, cont_vars = cont_vars, verbose = FALSE
+  )
+  reversed_result <- estimate_ps(
+    in_df = small_df, exposure_var = "exposure",
+    exp_value = 0, ref_value = 1,
+    class_vars = class_vars, cont_vars = cont_vars, verbose = FALSE
+  )
+  ordinary_result <- estimate_ps(
+    in_df = small_df, exposure_var = "exposure",
+    exp_value = 1, ref_value = 0,
+    class_vars = class_vars, cont_vars = cont_vars, verbose = FALSE
+  )
+
+  # Row-aligned, not merely value-preserving: every returned row must carry the
+  # label that ITS OWN id had on input.
+  expect_identical(
+    labelled_result$exposure,
+    labelled$exposure[match(labelled_result$.check_id, labelled$.check_id)]
+  )
+  expect_equal(labelled_result$ps, ordinary_result$ps, tolerance = 1e-8)
+  expect_equal(reversed_result$ps, 1 - ordinary_result$ps, tolerance = 1e-8)
+})
+
 test_that("estimate_ps errors when no data provided", {
   expect_error(
     estimate_ps(in_df = NULL, in_csvpath = NULL, verbose = FALSE),

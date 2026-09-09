@@ -1,96 +1,105 @@
 # BUILD TABLE 1 ################################################
-#' Build a Table 1 comparing baseline characteristics between groups
+#' Build an Unweighted or Weighted Baseline-Characteristics Table
 #'
-#' Generates a descriptive Table 1 with counts, percentages, means, SDs,
-#' crude differences, standardized mean differences (SMD), and missingness.
-#' Supports inverse probability weighting via a user-supplied weight column
-#' and optionally saves the output to an Excel file.
+#' Summarizes continuous, binary, and categorical characteristics for the
+#' total cohort and two exposure arms. The output includes formatted counts or
+#' means, exposed-minus-reference crude differences, standardized mean
+#' differences (SMD), and missingness. SMDs are reported on the raw scale; for
+#' example, 0.1 rather than 10 percent.
+#'
+#' @section Weighted analysis:
+#' Setting `use_weights = TRUE` is an explicit contract. `weight_var` must name
+#' an existing numeric column whose values are finite, non-missing, and
+#' non-negative. Numeric-looking character values are rejected rather than
+#' coerced. Zero-weight rows are reported and removed before the survey design
+#' and every table statistic are created; an error is raised if no
+#' positive-weight rows or no positive-weight rows in one exposure arm remain.
+#' A missing weight column is an error, not a silent unweighted fallback.
+#'
+#' Weighted continuous summaries use survey-weighted means and variances.
+#' Weighted categorical and binary summaries use weighted cell totals and
+#' proportions. The `n_of_patients` row reports sums of weights when weighting
+#' is enabled.
+#'
+#' @section Meaning of missing and existing counts:
+#' In weighted mode, the `Missing_*` columns and variable-row `Existing_*`
+#' columns remain unweighted row counts (after zero-weight rows have been
+#' removed). They describe data availability, not weighted population size.
+#' The exception is the `n_of_patients` row: its Total/Exp/Ref values and its
+#' `Existing_*` values are sums of weights. Consequently, an
+#' `Existing_Total_N_denom` column mixes an effective weighted total in the
+#' `n_of_patients` row with unweighted non-missing row counts in variable rows.
 #'
 #' @param in_df Data frame containing the analytic cohort.
-#' @param out_xlsxpath Character string. File path for Excel output, or
-#'   \code{NULL} to skip (default \code{NULL}).
-#' @param exposure_var Character string. Name of the binary exposure column.
-#' @param exp_value Value in \code{exposure_var} representing the exposed group
-#'   (default 1).
-#' @param ref_value Value in \code{exposure_var} representing the reference group
-#'   (default 0).
-#' @param use_weights Logical. Apply weights? (default FALSE).
-#' @param weight_var Character string. Name of the weight column (default
-#'   \code{"psweight"}).
-#' @param cont_vars Character vector of continuous variable names.
-#' @param cat_vars Character vector or named list of categorical variable names.
-#'   If a named list, each element should be a character vector of factor levels.
-#' @param binary_vars Character vector of binary variable names.
-#' @param drop_vars Character vector of variable names to exclude.
-#' @param drop_varpattern Character vector of regex patterns; matching variables
-#'   are excluded.
+#' @param out_xlsxpath Character path for Excel output, or `NULL` to skip file
+#'   output.
+#' @param exposure_var Character name of the exposure column.
+#' @param exp_value,ref_value Values identifying the exposed and reference
+#'   groups. Non-missing values outside these two groups are rejected; missing
+#'   exposure values are reported and excluded from arm-specific calculations.
+#' @param use_weights Logical; use `weight_var` for weighted summaries.
+#' @param weight_var Character name of the weight column. The default is
+#'   `"psweight"`.
+#' @param cont_vars Character vector of continuous-variable names.
+#' @param cat_vars Character vector of categorical-variable names, or a named
+#'   list whose elements give the levels to display for each variable.
+#' @param binary_vars Character vector of binary-variable names.
+#' @param drop_vars Character vector of variables to remove from the requested
+#'   continuous, binary, and categorical sets.
+#' @param drop_varpattern Character vector of regular-expression patterns;
+#'   matching requested variables are removed.
 #' @param Var_colname,Vartype_colname,Total_colname,Exp_colname,Ref_colname
-#'   Column-name overrides for the output table.
-#' @param CrudeDiff_colname,StdDiff_colname Column-name overrides for
-#'   difference columns.
-#' @param MissingTotal_colname,MissingExp_colname,MissingRef_colname
-#'   Column-name overrides for missingness columns.
-#' @param ExistingTotal_colname,ExistingExp_colname,ExistingRef_colname
-#'   Column-name overrides for non-missing-count columns. Set to \code{NULL}
-#'   to omit (default for Exp/Ref).
-#' @param mean_decimal,sd_decimal Integer. Decimal places for mean and SD.
-#' @param n_decimal Integer. Decimal places for counts (default 0).
-#' @param pct_decimal Integer. Decimal places for percentages (default 1).
-#' @param use_absolute_values_for_diff Logical. Show absolute differences?
-#'   (default FALSE).
-#' @param add_n_of_patients_row Logical. Prepend an \code{"n_of_patients"} row?
-#'   (default TRUE).
-#' @param verbose Logical. Print progress messages (default TRUE).
+#'   Output names for the variable, type, total, exposed, and reference columns.
+#' @param CrudeDiff_colname,StdDiff_colname Output names for the crude- and
+#'   standardized-difference columns.
+#' @param MissingTotal_colname,MissingExp_colname,MissingRef_colname Output
+#'   names for missing-count and missing-percent columns.
+#' @param ExistingTotal_colname,ExistingExp_colname,ExistingRef_colname Output
+#'   names for non-missing-count columns. Set a name to `NULL` to omit that
+#'   column; exposed and reference columns are omitted by default.
+#' @param mean_decimal,sd_decimal Numbers of decimal places for means and SDs.
+#' @param n_decimal Number of decimal places for counts or weighted totals.
+#' @param pct_decimal Number of decimal places for percentages.
+#' @param use_absolute_values_for_diff Logical; report absolute rather than
+#'   signed crude differences and SMDs.
+#' @param add_n_of_patients_row Logical; prepend an `n_of_patients` row.
+#' @param verbose Logical; print progress and validation messages.
 #'
-#' @return Invisibly returns the Table 1 data frame.
+#' @return Invisibly returns the formatted Table 1 data frame.
 #'
-#' @section Side Effects:
-#' When \code{out_xlsxpath} is not \code{NULL}, creates the output directory
-#' (if needed) and writes an Excel workbook.
+#' @section Side effects:
+#' With `out_xlsxpath`, creates its parent directory if needed and writes an
+#' Excel workbook.
 #'
 #' @examples
-#' csv_path <- system.file("extdata", "sample_data.csv", package = "rwetools")
-#' df <- read.csv(csv_path)
-#'
-#' # Unweighted Table 1
+#' df <- read.csv(system.file("extdata", "sample_data.csv",
+#'                            package = "rwetools"))
 #' tbl <- build_table1(
-#'   in_df        = df,
-#'   exposure_var = "exposure",
-#'   cont_vars    = c("cont1", "cont2", "cont3"),
-#'   binary_vars  = c("binary1", "binary2"),
-#'   cat_vars     = c("cat1", "cat2"),
-#'   verbose      = FALSE
+#'   in_df = df, exposure_var = "exposure",
+#'   cont_vars = c("cont1", "cont2", "cont3"),
+#'   binary_vars = c("binary1", "binary2"),
+#'   cat_vars = c("cat1", "cat2"), verbose = FALSE
 #' )
 #' head(tbl)
 #'
 #' \donttest{
-#' # Weighted Table 1 with Excel output (requires openxlsx)
+#' # Weighted Table 1 with Excel output
 #' if (requireNamespace("openxlsx", quietly = TRUE)) {
 #'   df_ps <- estimate_ps(
-#'     in_df        = df,
-#'     exposure_var = "exposure",
-#'     class_vars   = c("cat1", "cat2", "cat3", "cat4"),
-#'     cont_vars    = c("cont1", "cont2", "cont3"),
-#'     verbose      = FALSE
+#'     in_df = df, exposure_var = "exposure",
+#'     class_vars = c("cat1", "cat2", "cat3", "cat4"),
+#'     cont_vars = c("cont1", "cont2", "cont3"), verbose = FALSE
 #'   )
 #'   df_wt <- create_matching_weights(
-#'     in_df         = df_ps,
-#'     exposure_var  = "exposure",
-#'     ps_var        = "ps",
-#'     weight_var    = "mw_wt",
-#'     verbose       = FALSE
+#'     in_df = df_ps, exposure_var = "exposure", ps_var = "ps",
+#'     weight_var = "mw_wt", verbose = FALSE
 #'   )
-#'   out_xlsx <- tempfile(fileext = ".xlsx")
 #'   tbl_wt <- build_table1(
-#'     in_df        = df_wt,
-#'     out_xlsxpath = out_xlsx,
-#'     exposure_var = "exposure",
-#'     use_weights  = TRUE,
-#'     weight_var   = "mw_wt",
-#'     cont_vars    = c("cont1", "cont2", "cont3"),
-#'     binary_vars  = c("binary1", "binary2"),
-#'     cat_vars     = c("cat1", "cat2"),
-#'     verbose      = FALSE
+#'     in_df = df_wt, out_xlsxpath = tempfile(fileext = ".xlsx"),
+#'     exposure_var = "exposure", use_weights = TRUE,
+#'     weight_var = "mw_wt", cont_vars = c("cont1", "cont2", "cont3"),
+#'     binary_vars = c("binary1", "binary2"), cat_vars = c("cat1", "cat2"),
+#'     verbose = FALSE
 #'   )
 #' }
 #' }
@@ -260,25 +269,55 @@ build_table1 <- function(in_df,
   }
 
   # ================================================================
-  # Prepare weights (with NA validation when use_weights = TRUE)
+  # Prepare weights. Weighted mode is an explicit contract: never silently
+  # fall back to unit weights or repair invalid values.
   # ================================================================
   if (verbose) message("Step 1: Preparing weights...")
   w <- rep(1, nrow(dat))
   using_w <- FALSE
 
-  if (use_weights && !is.null(weight_var) && weight_var %in% names(dat)) {
-    # Warn about NA in weight_var (but do NOT drop rows — substitute with 1, same as original)
-    n_wt_na <- sum(is.na(dat[[weight_var]]))
-    if (n_wt_na > 0) {
-      warning(sprintf(
-        "weight_var '%s' contains %d missing value(s) (%.1f%% of %d rows). These will be assigned weight = 1.",
-        weight_var, n_wt_na, 100 * n_wt_na / nrow(dat), nrow(dat)
-      ))
+  if (!is.logical(use_weights) || length(use_weights) != 1L || is.na(use_weights)) {
+    stop("use_weights must be TRUE or FALSE")
+  }
+
+  if (use_weights) {
+    if (!is.character(weight_var) || length(weight_var) != 1L ||
+        is.na(weight_var) || !nzchar(weight_var)) {
+      stop("weight_var must name one weight column when use_weights = TRUE")
+    }
+    if (!weight_var %in% names(dat)) {
+      stop(sprintf("weight_var '%s' not found when use_weights = TRUE", weight_var))
+    }
+    if (!is.numeric(dat[[weight_var]])) {
+      stop(sprintf("weight_var '%s' must be numeric", weight_var))
     }
 
-    w_try <- suppressWarnings(as.numeric(dat[[weight_var]]))
-    w <- ifelse(is.na(w_try) | w_try <= 0, 1, w_try)
-    using_w <- any(w > 1)
+    w <- dat[[weight_var]]
+    if (anyNA(w)) {
+      stop(sprintf("weight_var '%s' must not contain missing values", weight_var))
+    }
+    if (any(!is.finite(w))) {
+      stop(sprintf("weight_var '%s' must contain only finite values", weight_var))
+    }
+    if (any(w < 0)) {
+      stop(sprintf("weight_var '%s' must contain only non-negative values", weight_var))
+    }
+
+    n_zero <- sum(w == 0)
+    if (n_zero > 0L) {
+      keep <- w > 0
+      dat <- dat[keep, , drop = FALSE]
+      w <- w[keep]
+      message(sprintf(
+        "Removed %d zero-weight row(s) before creating the survey design.",
+        n_zero
+      ))
+    }
+    if (nrow(dat) == 0L) {
+      stop("No positive-weight rows remain after removing zero-weight rows")
+    }
+
+    using_w <- TRUE
     if (verbose) message(sprintf("  Weight summary: min=%.2f, max=%.2f, mean=%.2f",
                                  min(w, na.rm=TRUE), max(w, na.rm=TRUE), mean(w, na.rm=TRUE)))
   } else {
@@ -293,6 +332,9 @@ build_table1 <- function(in_df,
   grp_vec <- dat$.grp
   idx_ref <- which(grp_vec == 0)
   idx_tx  <- which(grp_vec == 1)
+  if (length(idx_ref) == 0L || length(idx_tx) == 0L) {
+    stop("Both exposure groups must contain at least one positive-weight row")
+  }
 
   # Table parameters
   if (verbose) message("Step 2: Creating survey design objects...")

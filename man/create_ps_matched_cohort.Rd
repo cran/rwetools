@@ -2,7 +2,7 @@
 % Please edit documentation in R/create_psweights.R
 \name{create_ps_matched_cohort}
 \alias{create_ps_matched_cohort}
-\title{Perform propensity score matching and optionally generate diagnostic reports.}
+\title{Create a Propensity-Score-Matched Cohort}
 \usage{
 create_ps_matched_cohort(
   in_df = NULL,
@@ -37,125 +37,157 @@ create_ps_matched_cohort(
 )
 }
 \arguments{
-\item{in_df}{Data frame containing the input data with PS already calculated (optional if in_csvpath provided)}
+\item{in_df}{Data frame containing a precomputed PS, or \code{NULL} when
+\code{in_csvpath} is used.}
 
-\item{in_csvpath}{Character string. Path to input CSV file with PS already calculated (optional if in_df provided)}
+\item{in_csvpath}{Character path to an input CSV, or \code{NULL}. If both inputs
+are supplied, \code{in_df} is used with a warning.}
 
-\item{out_csvpath_matcheddata}{Character string. Path for matched cohort CSV file (optional)}
+\item{out_csvpath_matcheddata}{Character path for the matched-cohort CSV, or
+\code{NULL}.}
 
-\item{out_csvpath_crudedata_w_matchindicator}{Character string. Path for crude data with match indicator CSV file (optional)}
+\item{out_csvpath_crudedata_w_matchindicator}{Character path for the input
+cohort augmented with matching indicators, or \code{NULL}.}
 
-\item{out_xlsxpath_report}{Character string. Path for output Excel diagnostic report (optional).}
+\item{out_xlsxpath_report}{Character path for an Excel diagnostic report,
+or \code{NULL}.}
 
-\item{out_dir_plots}{Character string. Directory to save plot files (optional).}
+\item{out_dir_plots}{Character directory for diagnostic PNG files, or
+\code{NULL}.}
 
-\item{exposure_var}{Character string. Name of the binary exposure/treatment variable column (default: "exp")}
+\item{exposure_var}{Character name of the exposure column. The default is
+\code{"exp"}.}
 
-\item{exp_value}{Value representing the exposed/treated group (default: 1)}
+\item{exp_value, ref_value}{Values identifying the exposed and reference
+arms.}
 
-\item{ref_value}{Value representing the reference/control group (default: 0)}
+\item{ps_var}{Character name of the propensity-score column.}
 
-\item{ps_var}{Character string. Name of the PS variable column in the data (default: "ps")}
+\item{method}{\code{"nearest"} or \code{"subclass"}. Optimal and full matching are
+not supported.}
 
-\item{method}{Character. \pkg{MatchIt} matching method: "nearest" (default;
-the previous behavior) or "subclass". "subclass" does not produce 1:k pairs
-but returns matching weights (and a subclass) in a \code{.match_weights}
-column; for this method the matched Table 1 and any downstream effect
-estimation must be weighted by \code{.match_weights}.}
+\item{ratio}{Nearest-neighbour control ratio, 1:k. The default is 1.}
 
-\item{ratio}{Integer. Matching ratio (1:k) for "nearest". Default 1.}
+\item{min_controls, max_controls}{Optional variable-ratio bounds passed as
+\code{min.controls} and \code{max.controls} for nearest matching.}
 
-\item{min_controls, max_controls}{Numeric or NULL. Variable-ratio bounds passed
-to \pkg{MatchIt} (\code{min.controls} / \code{max.controls}) for
-"nearest". \code{NULL} (default) reproduces fixed 1:\code{ratio}.}
+\item{m_order}{Optional nearest-matching order passed as \code{m.order}.}
 
-\item{m_order}{Character or NULL. Matching order passed to \pkg{MatchIt}
-(\code{m.order}) for "nearest". \code{NULL} (default) keeps the
-MatchIt default.}
+\item{subclass_n}{Optional number of subclasses. \code{NULL} uses MatchIt's
+default.}
 
-\item{subclass_n}{Integer or NULL. Number of subclasses when
-\code{method = "subclass"}. \code{NULL} (default) uses the MatchIt default.}
+\item{caliper}{Positive caliper width interpreted on \code{caliper_scale}. The
+default is 0.2.}
 
-\item{caliper}{Numeric. Caliper width on the scale set by \code{caliper_scale}.
-Default is 0.2 (i.e. 0.2 x SD of logit(PS) under the default scale - the
-Austin (2011) convention).}
+\item{caliper_scale}{\code{"logit_ps_sd"}, \code{"raw_ps_sd"}, or \code{"raw"}; see
+\strong{Caliper scales}.}
 
-\item{caliper_scale}{Character. Scale on which matching and the caliper are
-applied. One of:
-\itemize{
-\item \code{"logit_ps_sd"} (default): match on logit(PS); caliper =
-\code{caliper} x SD(logit(PS)). Requires PS strictly within (0, 1).
-\item \code{"raw_ps_sd"}: match on PS; caliper = \code{caliper} x SD(PS). This is
-the behavior of rwetools <= 0.1.x.
-\item \code{"raw"}: match on PS; flat caliper of \code{caliper} on the raw PS scale
-(e.g. \code{caliper = 0.01}).
-}}
+\item{replace}{Logical; perform nearest matching with replacement.}
 
-\item{replace}{Logical. Whether to match with replacement (method = "nearest"). Default FALSE.}
+\item{trim_method}{PS trimming before matching: \code{"none"}, \code{"crump"}, or
+\code{"sturmer"}. Trimming changes the analytic population.}
 
-\item{trim_method}{Character. PS trimming applied before matching: "none"
-(default), "crump" (symmetric) or "sturmer" (asymmetric, exposure-group
-percentile tails). Trimming changes the analytic population and the
-interpretation of the estimand.}
+\item{trim_crump_alpha}{Crump symmetric bound in (0, 0.5).}
 
-\item{trim_crump_alpha}{Numeric in (0, 0.5). Symmetric Crump bound (default 0.1).}
+\item{trim_sturmer_p}{Sturmer arm-specific tail proportion in (0, 0.5).}
 
-\item{trim_sturmer_p}{Numeric in (0, 0.5). Sturmer tail percentile (default 0.05).}
+\item{make_crude_matched_table1}{Logical; include crude and matched Table 1
+sheets in the diagnostic report.}
 
-\item{make_crude_matched_table1}{Logical. Whether to generate crude and matched Table 1 (default: FALSE).}
+\item{table1_cont_vars, table1_binary_vars}{Character vectors of continuous
+and binary variables for Table 1. When all Table 1 variable arguments are
+\code{NULL}, types are detected automatically.}
 
-\item{table1_cont_vars}{Character vector. Names of continuous variables for Table 1 (optional, auto-detected if NULL)}
+\item{table1_cat_vars}{Character vector, or named level list, for
+categorical variables in Table 1.}
 
-\item{table1_binary_vars}{Character vector. Names of binary variables for Table 1 (optional, auto-detected if NULL)}
+\item{std_diff_threshold}{Absolute SMD threshold for diagnostics. The
+default is 0.1 on the raw SMD scale.}
 
-\item{table1_cat_vars}{Character vector. Names of categorical variables for Table 1 (optional, auto-detected if NULL)}
+\item{readme_text}{Optional text for the report's README worksheet.}
 
-\item{std_diff_threshold}{Numeric. Threshold for acceptable standardized difference (default: 0.1)}
-
-\item{readme_text}{Character string. Optional message to include in README sheet of Excel report}
-
-\item{verbose}{Logical. Print progress messages (default TRUE).}
+\item{verbose}{Logical; print progress and diagnostic messages.}
 }
 \value{
-A data frame containing the matched cohort only (crude data with match indicator
-can be saved to CSV via out_csvpath_crudedata_w_matchindicator).
+Invisibly returns the matched-cohort data frame. It includes
+\code{matched}, \code{match_id}, and \code{.match_weights}; internal recoding columns are
+removed.
 }
 \description{
-This function performs propensity-score matching using \pkg{MatchIt} and
-generates comprehensive diagnostic reports including assumption checks,
-balance tables, and plots. The matching algorithm is selected via
-\code{method} (nearest / optimal / full / subclass).
+Uses \code{\link[MatchIt:matchit]{MatchIt::matchit()}} with a precomputed propensity score to perform
+nearest-neighbour or subclass matching. The returned cohort retains the
+caller's original exposure labels and includes \code{match_id} and
+\code{.match_weights} for downstream balance and effect analysis. Optional
+outputs provide pre/post-match diagnostics, tables, plots, and CSV files.
 }
-\section{Side Effects}{
+\section{Exposure coding}{
+
+\code{exp_value} and \code{ref_value} are always recoded internally to 1 and 0 for
+MatchIt. They must be distinct scalar, non-missing values and both must
+occur. Rows matching neither value are reported and removed. The returned
+exposure column is restored to its original labels and row alignment. For a
+logical exposure, use \code{TRUE} and \code{FALSE}, not numeric 1 and 0.
+}
+
+\section{Caliper scales}{
 
 \itemize{
-\item Writes matched-cohort and/or crude-data CSV files when the
-corresponding path arguments are provided.
-\item Creates directories, writes an Excel diagnostic report, and saves
-PNG plot files when the corresponding path arguments are supplied.
+\item \code{"logit_ps_sd"} (default): match on logit(PS) with a caliper equal
+to \code{caliper} times SD(logit(PS)); PS must lie strictly inside (0, 1).
+\item \code{"raw_ps_sd"}: match on PS with a caliper equal to \code{caliper} times
+SD(PS). This reproduces the rwetools 0.1.x scale.
+\item \code{"raw"}: match on PS with an absolute raw-PS caliper.
 }
+Calipers apply to nearest matching, not subclass matching.
+}
+
+\section{Choosing the downstream effect block}{
+
+A no-replacement nearest 1:1 cohort with unit \code{.match_weights} can be passed
+to \code{in_df_match} in \code{\link[=estimate_hr]{estimate_hr()}}, \code{\link[=estimate_ir]{estimate_ir()}}, or \code{\link[=estimate_risk]{estimate_risk()}};
+pass \code{match_id} as \code{if_match_match_id} for set-aware inference where the
+effect function supports it.
+
+Other designs are weight-defined. Subclass matching returns subclass weights.
+Variable-ratio matching, and fixed \code{ratio > 1} when some exposed units find
+fewer than the requested controls, can also return non-uniform control
+weights. Pass these cohorts as \code{in_df_weight} with
+\code{if_weight_weight_var = ".match_weights"} to honour the weights. This route
+does not preserve matched-set clustering; see the effect-function
+documentation for the resulting inference limitations.
+
+The same weights are required for balance assessment. The built-in matched
+Table 1 automatically applies \code{.match_weights} whenever the returned values
+are non-unit, including subclass and variable/incomplete nearest 1:k output.
+
+With \code{replace = TRUE}, a reused control can belong to several matched sets;
+its \code{match_id} contains the joined set ids. Such output is rejected by the
+effect matched block. The weighted route honours reuse weights but is not an
+Abadie-Imbens replacement variance, and this function does not return the
+one-row-per-unit-per-pair representation needed for pair-aware replacement
+inference.
+}
+
+\section{Side effects}{
+
+Writes matched/crude CSV files, an Excel report, or PNG figures when the
+corresponding output arguments are supplied, creating parent directories
+as needed.
 }
 
 \examples{
 \donttest{
-# Requires MatchIt
 if (requireNamespace("MatchIt", quietly = TRUE)) {
-  csv_path <- system.file("extdata", "sample_data.csv", package = "rwetools")
+  df <- read.csv(system.file("extdata", "sample_data.csv",
+                             package = "rwetools"))
   df_ps <- estimate_ps(
-    in_df        = read.csv(csv_path),
-    exposure_var = "exposure",
-    class_vars   = c("cat1", "cat2", "cat3", "cat4"),
-    cont_vars    = c("cont1", "cont2", "cont3"),
-    verbose      = FALSE
+    in_df = df, exposure_var = "exposure",
+    class_vars = c("cat1", "cat2", "cat3", "cat4"),
+    cont_vars = c("cont1", "cont2", "cont3"), verbose = FALSE
   )
-
   matched <- create_ps_matched_cohort(
-    in_df        = df_ps,
-    exposure_var = "exposure",
-    ps_var       = "ps",
-    ratio        = 1,
-    caliper      = 0.2,
-    verbose      = FALSE
+    in_df = df_ps, exposure_var = "exposure", ps_var = "ps",
+    ratio = 1, caliper = 0.2, verbose = FALSE
   )
   nrow(matched)
 }

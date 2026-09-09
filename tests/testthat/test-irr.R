@@ -1,4 +1,4 @@
-# Tests for the always-on marginal IRR in the v0.4.0 estimate_hr_ir.
+# Tests for the always-on marginal IRR in the v0.4.0 estimate_ir.
 # Fixed methods (no user args): crude/matched = marginal Poisson rate model
 # (model SE; matrix r10-A), weighted = svyglm quasipoisson robust (r12-A),
 # stratified = direct-standardized (r11-A / r13-A).
@@ -19,7 +19,7 @@ iptw_df <- function(df) {
 
 test_that("IRR is always reported; crude = Poisson model SE (r10-A)", {
   df <- sample_df()
-  res <- estimate_hr_ir(in_df_crude = df, exposure_var = "exposure",
+  res <- estimate_ir(in_df_crude = df, exposure_var = "exposure",
                         outcome_var = "outcome",
                         followuptime_var = "follow_up_days", verbose = FALSE)
   irr <- res$incidence_rate_ratios
@@ -42,10 +42,9 @@ test_that("IRR is always reported; crude = Poisson model SE (r10-A)", {
   D1 <- fir$N_Events_Unwt[2]; D0 <- fir$N_Events_Unwt[1]
   expect_equal(irr$lnIRR_SE, sqrt(1 / D1 + 1 / D0), tolerance = 2e-4)
 })
-
 test_that("weighted IRR = svyglm quasipoisson robust, fixture-exact", {
   df <- sample_df(); wt <- iptw_df(df)
-  res <- estimate_hr_ir(in_df_crude = df, in_df_weight = wt,
+  res <- estimate_ir(in_df_crude = df, in_df_weight = wt,
                         if_weight_weight_var = "iptw",
                         exposure_var = "exposure", outcome_var = "outcome",
                         followuptime_var = "follow_up_days", verbose = FALSE)
@@ -55,26 +54,4 @@ test_that("weighted IRR = svyglm quasipoisson robust, fixture-exact", {
   firr <- fx$hr_ir$incidence_rate_ratios
   expect_equal(irr$IRR[2],      firr$IRR[2],      tolerance = 1e-10)
   expect_equal(irr$lnIRR_SE[2], firr$lnIRR_SE[2], tolerance = 1e-10)
-})
-
-test_that("stratified IRR is unblocked: direct-standardized (r11-A / r13-A)", {
-  df <- sample_df(); wt <- iptw_df(df)
-  res <- estimate_hr_ir(in_df_crude = df, in_df_weight = wt,
-                        if_weight_weight_var = "iptw",
-                        exposure_var = "exposure", outcome_var = "outcome",
-                        followuptime_var = "follow_up_days",
-                        stratification_var = "cat1", verbose = FALSE)
-  irr <- res$incidence_rate_ratios
-  expect_identical(nrow(irr), 2L)
-  expect_true(all(is.finite(irr$IRR)))
-  expect_match(irr$Model[1], "direct-standardized")
-
-  # crude direct-standardized IRR == hand calc from the fixture stratum detail
-  sd_u <- fx$hr_ir_strat$stratum_details_unwt
-  hand_arm <- function(gr) {
-    sel <- sd_u$exposure_group == gr
-    sum(sd_u$std_weight[sel] * sd_u$n_events[sel] / sd_u$person_years[sel])
-  }
-  expect_equal(irr$IRR[1], hand_arm("Exposed") / hand_arm("Reference"),
-               tolerance = 1e-10)
 })

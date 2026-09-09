@@ -76,6 +76,53 @@ test_that("create_iptw(stabilize = TRUE) returns stabilized weights", {
                ifelse(exp01 == 1, p_bar / ps_df$ps, (1 - p_bar) / (1 - ps_df$ps)))
 })
 
+test_that("weighting stages honor labelled exposure and keep it row-aligned", {
+  labelled <- ps_df
+  labelled$exposure <- ifelse(labelled$exposure == 1, "GLP1", "DPP4")
+  labelled$.check_id <- seq_len(nrow(labelled))
+
+  # Row-aligned, not merely value-preserving: every returned row must carry the
+  # label that ITS OWN id had on input. Comparing the two runs' exposure
+  # columns to each other cannot detect a shared row-order error.
+  aligned <- function(res) {
+    identical(res$exposure,
+              labelled$exposure[match(res$.check_id, labelled$.check_id)])
+  }
+
+  calls <- list(
+    iptw = list(fun = create_iptw, weight = "iptw_wt"),
+    mw = list(fun = create_matching_weights, weight = "mw_wt"),
+    ow = list(fun = create_overlap_weights, weight = "ow_wt")
+  )
+  for (nm in names(calls)) {
+    spec <- calls[[nm]]
+    labelled_result <- spec$fun(
+      in_df = labelled, exposure_var = "exposure",
+      exp_value = "GLP1", ref_value = "DPP4", ps_var = "ps",
+      weight_var = spec$weight, verbose = FALSE
+    )
+    numeric_result <- spec$fun(
+      in_df = ps_df, exposure_var = "exposure",
+      exp_value = 1, ref_value = 0, ps_var = "ps",
+      weight_var = spec$weight, verbose = FALSE
+    )
+
+    expect_true(aligned(labelled_result), info = nm)
+    expect_equal(labelled_result[[spec$weight]], numeric_result[[spec$weight]],
+                 info = nm)
+  }
+
+  # trim_method != "none" is the only path that subsets the saved original
+  # labels, so it must be exercised at least once.
+  trimmed <- create_iptw(
+    in_df = labelled, exposure_var = "exposure",
+    exp_value = "GLP1", ref_value = "DPP4", ps_var = "ps",
+    weight_var = "iptw_wt", trim_method = "crump", verbose = FALSE
+  )
+  expect_lt(nrow(trimmed), nrow(labelled))
+  expect_true(aligned(trimmed))
+})
+
 test_that("weighting functions error when no data provided", {
   expect_error(
     create_iptw(in_df = NULL, in_csvpath = NULL, verbose = FALSE),

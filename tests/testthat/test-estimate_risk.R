@@ -1,18 +1,57 @@
-# Tests for the v0.4.0 estimate_rr_rd (API v2: data blocks, always-on
-# analytical CIs with cloglog Risk/CIF intervals, opt-in fixed-weight
-# bootstrap; Fine-Gray moved to estimate_hr_ir).
+# Tests for estimate_risk (renamed from estimate_rr_rd at 0.5.0). Data-block
+# API, always-on analytical CIs with cloglog Risk/CIF intervals, opt-in
+# fixed-weight bootstrap; Fine-Gray lives in estimate_hr; direct
+# standardization removed.
 
 fx <- readRDS(testthat::test_path("fixtures", "v030_fixtures.rds"))
 
-test_that("estimate_rr_rd returns results for a crude block (KM)", {
-  skip_on_cran()
-  result <- estimate_rr_rd(
+test_that("Item 4: AJ rejects rows that are both event and competing event", {
+  df <- read.csv(system.file("extdata", "sample_data.csv", package = "rwetools"))
+  bad <- df
+  bad$competing_event[which(bad$outcome == 1)[1:3]] <- 1  # 3 ambiguous rows
+  args <- list(exposure_var = "exposure", outcome_var = "outcome",
+               followuptime_var = "follow_up_days", time_unit = "days",
+               risk_at_timepoint = 365, verbose = FALSE)
+  expect_error(
+    do.call(estimate_risk, c(args, list(
+      in_df_crude = bad, risk_estimator = "AJ",
+      if_aj_competing_event_var = "competing_event"))),
+    "Aalen-Johansen: 3 row\\(s\\).*ambiguous"
+  )
+  # KM ignores the competing variable, so the same data still runs there
+  expect_silent(suppressMessages(do.call(estimate_risk, c(args, list(
+    in_df_crude = bad, risk_estimator = "KM")))))
+  # and clean AJ data is unaffected
+  expect_type(suppressMessages(do.call(estimate_risk, c(args, list(
+    in_df_crude = df, risk_estimator = "AJ",
+    if_aj_competing_event_var = "competing_event")))), "list")
+})
+
+test_that("0.4.0 names are gone (0.5.0 breaking renames)", {
+  expect_false(exists("estimate_rr_rd", where = asNamespace("rwetools"),
+                      inherits = FALSE))
+  fm <- names(formals(estimate_risk))
+  expect_true("risk_at_timepoint" %in% fm)
+  expect_false(any(c("rr_rd_at_timepoint", "rr_rd_per_individuals",
+                     "stratification_var", "strata_var") %in% fm))
+  expect_identical(fm[length(fm)], "verbose")
+  expect_error(
+    estimate_risk(in_df_crude = small_df, exposure_var = "exposure",
+                  outcome_var = "outcome",
+                  followuptime_var = "follow_up_days",
+                  rr_rd_at_timepoint = 365, verbose = FALSE),
+    "unused argument"
+  )
+})
+
+test_that("estimate_risk returns results for a crude block (KM)", {
+  result <- estimate_risk(
     in_df_crude          = small_df,
     exposure_var         = "exposure",
     outcome_var          = "outcome",
     followuptime_var     = "follow_up_days",
     time_unit            = "days",
-    rr_rd_at_timepoint   = 365,
+    risk_at_timepoint   = 365,
     risk_per_individuals = 1000,
     if_bootstrap_count   = 20,
     if_bootstrap_n_cores = 1,
@@ -30,8 +69,48 @@ test_that("estimate_rr_rd returns results for a crude block (KM)", {
   expect_false("Survival" %in% names(result$cumulative_incidence))
 })
 
-test_that("estimate_rr_rd runs a weighted block", {
-  skip_on_cran()
+test_that("estimate_risk uses the shared exposure preparation contract", {
+  labelled <- small_df
+  labelled$exposure <- ifelse(labelled$exposure == 1, "GLP1", "DPP4")
+  args <- list(outcome_var = "outcome", followuptime_var = "follow_up_days",
+               risk_at_timepoint = 365, verbose = FALSE)
+
+  ordinary <- do.call(estimate_risk, c(list(
+    in_df_crude = small_df, exposure_var = "exposure",
+    exp_value = 1, ref_value = 0
+  ), args))
+  labelled_result <- do.call(estimate_risk, c(list(
+    in_df_crude = labelled, exposure_var = "exposure",
+    exp_value = "GLP1", ref_value = "DPP4"
+  ), args))
+  reversed <- do.call(estimate_risk, c(list(
+    in_df_crude = small_df, exposure_var = "exposure",
+    exp_value = 0, ref_value = 1
+  ), args))
+
+  expect_equal(labelled_result$estimates$RR_Analytical,
+               ordinary$estimates$RR_Analytical)
+  expect_equal(reversed$estimates$RR_Analytical,
+               1 / ordinary$estimates$RR_Analytical)
+  expect_equal(reversed$estimates$RDperN_Analytical,
+               -ordinary$estimates$RDperN_Analytical)
+  ordinary_ci <- ordinary$cumulative_incidence
+  reversed_ci <- reversed$cumulative_incidence
+  expect_equal(
+    reversed_ci$Risk[reversed_ci$Exposure_Value == "0"],
+    ordinary_ci$Risk[ordinary_ci$Exposure_Value == "1"]
+  )
+  expect_equal(
+    reversed_ci$Risk[reversed_ci$Exposure_Value == "1"],
+    ordinary_ci$Risk[ordinary_ci$Exposure_Value == "0"]
+  )
+  expect_error(do.call(estimate_risk, c(list(
+    in_df_crude = small_df, exposure_var = "exposure",
+    exp_value = 1, ref_value = 1
+  ), args)), "must differ")
+})
+
+test_that("estimate_risk runs a weighted block", {
   ps_df_rr <- estimate_ps(
     in_df = small_df, exposure_var = "exposure",
     class_vars = class_vars, cont_vars = cont_vars,
@@ -42,7 +121,7 @@ test_that("estimate_rr_rd runs a weighted block", {
     ps_var = "ps", weight_var = "mw_wt", verbose = FALSE
   )
 
-  result <- estimate_rr_rd(
+  result <- estimate_risk(
     in_df_crude          = small_df,
     in_df_weight         = wt_df_rr,
     if_weight_weight_var = "mw_wt",
@@ -50,7 +129,7 @@ test_that("estimate_rr_rd runs a weighted block", {
     outcome_var          = "outcome",
     followuptime_var     = "follow_up_days",
     time_unit            = "days",
-    rr_rd_at_timepoint   = 365,
+    risk_at_timepoint   = 365,
     risk_per_individuals = 1000,
     verbose              = FALSE
   )
@@ -59,10 +138,10 @@ test_that("estimate_rr_rd runs a weighted block", {
 
 test_that("fixture equivalence: RR/RD analytical reproduce; Risk CI is cloglog", {
   df <- read.csv(system.file("extdata", "sample_data.csv", package = "rwetools"))
-  res <- estimate_rr_rd(
+  res <- estimate_risk(
     in_df_crude = df, exposure_var = "exposure", outcome_var = "outcome",
     followuptime_var = "follow_up_days", time_unit = "days",
-    rr_rd_at_timepoint = 365, risk_per_individuals = 1000, verbose = FALSE
+    risk_at_timepoint = 365, risk_per_individuals = 1000, verbose = FALSE
   )
   fkm <- fx$rr_rd_km$estimates[1, ]   # old "Unweighted" row == new Crude block
   for (cn in c("RiskperN_Ref", "RiskperN_Exp", "RR_Analytical",
@@ -88,32 +167,12 @@ test_that("fixture equivalence: RR/RD analytical reproduce; Risk CI is cloglog",
   }
 })
 
-test_that("stratified (standardized) estimates reproduce the fixture", {
-  skip_on_cran()
-  df <- read.csv(system.file("extdata", "sample_data.csv", package = "rwetools"))
-  res <- estimate_rr_rd(
-    in_df_crude = df, exposure_var = "exposure", outcome_var = "outcome",
-    followuptime_var = "follow_up_days", time_unit = "days",
-    rr_rd_at_timepoint = 365, risk_per_individuals = 1000,
-    stratification_var = "cat1", verbose = FALSE
-  )
-  fkms <- fx$rr_rd_km_strat$estimates[1, ]
-  expect_identical(res$estimates$Analysis, "Crude (Standardized)")
-  for (cn in c("RR_Analytical", "RR_LCI_Analytical", "RDperN_Analytical",
-               "RDperN_SE_Analytical")) {
-    expect_equal(res$estimates[[cn]], fkms[[cn]], tolerance = 1e-10)
-  }
-  expect_equal(res$stratum_details$w_k, fx$rr_rd_km_strat$stratum_details$w_k[1:4],
-               tolerance = 1e-12)
-})
-
 test_that("AJ estimator reproduces the fixture and enforces its argument rules", {
-  skip_on_cran()
   df <- read.csv(system.file("extdata", "sample_data.csv", package = "rwetools"))
-  res <- estimate_rr_rd(
+  res <- estimate_risk(
     in_df_crude = df, exposure_var = "exposure", outcome_var = "outcome",
     followuptime_var = "follow_up_days", time_unit = "days",
-    rr_rd_at_timepoint = 365, risk_per_individuals = 1000,
+    risk_at_timepoint = 365, risk_per_individuals = 1000,
     risk_estimator = "AJ", if_aj_competing_event_var = "competing_event",
     verbose = FALSE
   )
@@ -121,16 +180,16 @@ test_that("AJ estimator reproduces the fixture and enforces its argument rules",
   expect_equal(res$estimates$RR_Analytical, faj$RR_Analytical, tolerance = 1e-10)
   expect_equal(res$estimates$RDperN_SE_Analytical, faj$RDperN_SE_Analytical,
                tolerance = 1e-10)
-  expect_null(res$subdist_hazard)   # Fine-Gray lives in estimate_hr_ir now
+  expect_null(res$subdist_hazard)   # Fine-Gray lives in estimate_hr now
 
   expect_error(
-    estimate_rr_rd(in_df_crude = df, exposure_var = "exposure",
+    estimate_risk(in_df_crude = df, exposure_var = "exposure",
                    outcome_var = "outcome", followuptime_var = "follow_up_days",
                    risk_estimator = "AJ", verbose = FALSE),
     "if_aj_competing_event_var"
   )
   expect_message(
-    estimate_rr_rd(in_df_crude = small_df, exposure_var = "exposure",
+    estimate_risk(in_df_crude = small_df, exposure_var = "exposure",
                    outcome_var = "outcome", followuptime_var = "follow_up_days",
                    risk_estimator = "KM",
                    if_aj_competing_event_var = "competing_event", verbose = TRUE),
@@ -138,9 +197,9 @@ test_that("AJ estimator reproduces the fixture and enforces its argument rules",
   )
 })
 
-test_that("estimate_rr_rd errors when no data provided", {
+test_that("estimate_risk errors when no data provided", {
   expect_error(
-    estimate_rr_rd(
+    estimate_risk(
       outcome_var      = "outcome",
       followuptime_var = "follow_up_days",
       verbose          = FALSE
@@ -150,15 +209,12 @@ test_that("estimate_rr_rd errors when no data provided", {
 })
 
 test_that("matched block: pair-resample bootstrap differs from row resample", {
-  skip_on_cran()
-  set.seed(3)
-  md <- small_df[sample.int(nrow(small_df), 300), ]
-  md$pair_id <- rep(seq_len(150), each = 2)
+  md <- make_test_matched_pairs(150, seed = 3)
   run_boot <- function(id) {
-    suppressWarnings(suppressMessages(estimate_rr_rd(
+    suppressWarnings(suppressMessages(estimate_risk(
       in_df_match = md, if_match_match_id = id,
       exposure_var = "exposure", outcome_var = "outcome",
-      followuptime_var = "follow_up_days", rr_rd_at_timepoint = 365,
+      followuptime_var = "follow_up_days", risk_at_timepoint = 365,
       if_bootstrap_count = 15, if_bootstrap_n_cores = 1,
       if_bootstrap_seed = 11, verbose = FALSE
     )))
@@ -171,10 +227,10 @@ test_that("matched block: pair-resample bootstrap differs from row resample", {
   # seed reproducibility + analytical columns unaffected by the bootstrap
   b_pair2 <- run_boot("pair_id")
   expect_identical(b_pair$estimates$RR_LCI_Boot, b_pair2$estimates$RR_LCI_Boot)
-  r0 <- estimate_rr_rd(in_df_match = md, if_match_match_id = "pair_id",
+  r0 <- estimate_risk(in_df_match = md, if_match_match_id = "pair_id",
                        exposure_var = "exposure", outcome_var = "outcome",
                        followuptime_var = "follow_up_days",
-                       rr_rd_at_timepoint = 365, verbose = FALSE)
+                       risk_at_timepoint = 365, verbose = FALSE)
   expect_equal(b_pair$estimates$RR_LCI_Analytical,
                r0$estimates$RR_LCI_Analytical, tolerance = 1e-12)
 })
@@ -182,10 +238,10 @@ test_that("matched block: pair-resample bootstrap differs from row resample", {
 test_that("Risk on the 0 boundary yields NA cloglog CI plus a message", {
   # timepoint before any event: both arm risks are exactly 0
   expect_message(
-    res <- estimate_rr_rd(
+    res <- estimate_risk(
       in_df_crude = small_df, exposure_var = "exposure",
       outcome_var = "outcome", followuptime_var = "follow_up_days",
-      rr_rd_at_timepoint = 0.5, verbose = FALSE
+      risk_at_timepoint = 0.5, verbose = FALSE
     ),
     "cloglog CI is undefined"
   )
@@ -195,12 +251,11 @@ test_that("Risk on the 0 boundary yields NA cloglog CI plus a message", {
 })
 
 test_that("bootstrap is seed-reproducible on 2 cores as well as 1", {
-  skip_on_cran()
   run2 <- function() {
-    suppressWarnings(suppressMessages(estimate_rr_rd(
+    suppressWarnings(suppressMessages(estimate_risk(
       in_df_crude = small_df, exposure_var = "exposure",
       outcome_var = "outcome", followuptime_var = "follow_up_days",
-      rr_rd_at_timepoint = 365,
+      risk_at_timepoint = 365,
       if_bootstrap_count = 12, if_bootstrap_n_cores = 2,
       if_bootstrap_seed = 21, verbose = FALSE
     )))

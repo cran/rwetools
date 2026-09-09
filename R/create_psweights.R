@@ -348,14 +348,15 @@ create_overlap_weights <- function(
   if (verbose) message("\nStep 2: Data Preparation")
   if (verbose) message("----------------------------------------")
   
-  # Recode exposure if needed
-  unique_exposure_vals <- unique(data_work[[exposure_var]])
-  
-  if (!(all(unique_exposure_vals %in% c(0, 1)))) {
-    if (verbose) message(sprintf("Recoding exposure: %s -> 1, %s -> 0", exp_value, ref_value))
-    data_work[[exposure_var]] <- ifelse(data_work[[exposure_var]] == exp_value, 1,
-                                        ifelse(data_work[[exposure_var]] == ref_value, 0, NA))
-  }
+  # Canonicalize exposure for calculations regardless of its current values.
+  # Keep the original labels for the returned/saved data.
+  original_exposure <- data_work[[exposure_var]]
+  exposure_01 <- .canonicalize_exposure(
+    original_exposure, exp_value, ref_value,
+    exposure_var = exposure_var, require_both = TRUE, warn_unmatched = TRUE
+  )
+  if (verbose) message(sprintf("Internal exposure coding: %s -> 1, %s -> 0", exp_value, ref_value))
+  data_work[[exposure_var]] <- exposure_01$value
   
   # Get PS and exposure vectors
   ps <- data_work[[ps_var]]
@@ -367,6 +368,7 @@ create_overlap_weights <- function(
                     verbose = verbose)
   if (!all(.keep)) {
     data_work <- data_work[.keep, , drop = FALSE]
+    original_exposure <- original_exposure[.keep]
     ps  <- ps[.keep]
     exp <- exp[.keep]
   }
@@ -826,6 +828,8 @@ create_overlap_weights <- function(
   if (verbose) message("SAVING OUTPUTS")
   if (verbose) message("========================================")
   
+  data_work[[exposure_var]] <- original_exposure
+
   # Save to CSV if path specified
   if (!is.null(out_csvpath)) {
     out_dir <- dirname(out_csvpath)
@@ -1018,99 +1022,126 @@ check_ps_assumptions_internal <- function(data, ps_var, exposure, verbose = TRUE
 
 
 # MATCHING create_ps_matched_cohort ############ 
-#' 
-#' Perform propensity score matching and optionally generate diagnostic reports.
-#' 
-#' This function performs propensity-score matching using \pkg{MatchIt} and
-#' generates comprehensive diagnostic reports including assumption checks,
-#' balance tables, and plots. The matching algorithm is selected via
-#' \code{method} (nearest / optimal / full / subclass).
+#' Create a Propensity-Score-Matched Cohort
 #'
-#' @param in_df Data frame containing the input data with PS already calculated (optional if in_csvpath provided)
-#' @param in_csvpath Character string. Path to input CSV file with PS already calculated (optional if in_df provided)
-#' @param out_csvpath_matcheddata Character string. Path for matched cohort CSV file (optional)
-#' @param out_csvpath_crudedata_w_matchindicator Character string. Path for crude data with match indicator CSV file (optional)
-#' @param out_xlsxpath_report Character string. Path for output Excel diagnostic report (optional).
-#' @param out_dir_plots Character string. Directory to save plot files (optional).
-#' @param exposure_var Character string. Name of the binary exposure/treatment variable column (default: "exp")
-#' @param exp_value Value representing the exposed/treated group (default: 1)
-#' @param ref_value Value representing the reference/control group (default: 0)
-#' @param ps_var Character string. Name of the PS variable column in the data (default: "ps")
-#' @param method Character. \pkg{MatchIt} matching method: "nearest" (default;
-#'   the previous behavior) or "subclass". "subclass" does not produce 1:k pairs
-#'   but returns matching weights (and a subclass) in a \code{.match_weights}
-#'   column; for this method the matched Table 1 and any downstream effect
-#'   estimation must be weighted by \code{.match_weights}.
-#' @param ratio Integer. Matching ratio (1:k) for "nearest". Default 1.
-#' @param min_controls,max_controls Numeric or NULL. Variable-ratio bounds passed
-#'   to \pkg{MatchIt} (\code{min.controls} / \code{max.controls}) for
-#'   "nearest". \code{NULL} (default) reproduces fixed 1:\code{ratio}.
-#' @param m_order Character or NULL. Matching order passed to \pkg{MatchIt}
-#'   (\code{m.order}) for "nearest". \code{NULL} (default) keeps the
-#'   MatchIt default.
-#' @param subclass_n Integer or NULL. Number of subclasses when
-#'   \code{method = "subclass"}. \code{NULL} (default) uses the MatchIt default.
-#' @param caliper Numeric. Caliper width on the scale set by `caliper_scale`.
-#'   Default is 0.2 (i.e. 0.2 x SD of logit(PS) under the default scale - the
-#'   Austin (2011) convention).
-#' @param caliper_scale Character. Scale on which matching and the caliper are
-#'   applied. One of:
-#'   \itemize{
-#'     \item `"logit_ps_sd"` (default): match on logit(PS); caliper =
-#'       `caliper` x SD(logit(PS)). Requires PS strictly within (0, 1).
-#'     \item `"raw_ps_sd"`: match on PS; caliper = `caliper` x SD(PS). This is
-#'       the behavior of rwetools <= 0.1.x.
-#'     \item `"raw"`: match on PS; flat caliper of `caliper` on the raw PS scale
-#'       (e.g. `caliper = 0.01`).
-#'   }
-#' @param replace Logical. Whether to match with replacement (method = "nearest"). Default FALSE.
-#' @param trim_method Character. PS trimming applied before matching: "none"
-#'   (default), "crump" (symmetric) or "sturmer" (asymmetric, exposure-group
-#'   percentile tails). Trimming changes the analytic population and the
-#'   interpretation of the estimand.
-#' @param trim_crump_alpha Numeric in (0, 0.5). Symmetric Crump bound (default 0.1).
-#' @param trim_sturmer_p Numeric in (0, 0.5). Sturmer tail percentile (default 0.05).
-#' @param make_crude_matched_table1 Logical. Whether to generate crude and matched Table 1 (default: FALSE).
-#' @param table1_cont_vars Character vector. Names of continuous variables for Table 1 (optional, auto-detected if NULL)
-#' @param table1_binary_vars Character vector. Names of binary variables for Table 1 (optional, auto-detected if NULL)
-#' @param table1_cat_vars Character vector. Names of categorical variables for Table 1 (optional, auto-detected if NULL)
-#' @param std_diff_threshold Numeric. Threshold for acceptable standardized difference (default: 0.1)
-#' @param readme_text Character string. Optional message to include in README sheet of Excel report
-#' @param verbose Logical. Print progress messages (default TRUE).
+#' Uses [MatchIt::matchit()] with a precomputed propensity score to perform
+#' nearest-neighbour or subclass matching. The returned cohort retains the
+#' caller's original exposure labels and includes `match_id` and
+#' `.match_weights` for downstream balance and effect analysis. Optional
+#' outputs provide pre/post-match diagnostics, tables, plots, and CSV files.
 #'
-#' @return A data frame containing the matched cohort only (crude data with match indicator
-#'   can be saved to CSV via out_csvpath_crudedata_w_matchindicator).
+#' @section Exposure coding:
+#' `exp_value` and `ref_value` are always recoded internally to 1 and 0 for
+#' MatchIt. They must be distinct scalar, non-missing values and both must
+#' occur. Rows matching neither value are reported and removed. The returned
+#' exposure column is restored to its original labels and row alignment. For a
+#' logical exposure, use `TRUE` and `FALSE`, not numeric 1 and 0.
 #'
-#' @section Side Effects:
+#' @section Caliper scales:
 #' \itemize{
-#'   \item Writes matched-cohort and/or crude-data CSV files when the
-#'     corresponding path arguments are provided.
-#'   \item Creates directories, writes an Excel diagnostic report, and saves
-#'     PNG plot files when the corresponding path arguments are supplied.
+#'   \item `"logit_ps_sd"` (default): match on logit(PS) with a caliper equal
+#'     to `caliper` times SD(logit(PS)); PS must lie strictly inside (0, 1).
+#'   \item `"raw_ps_sd"`: match on PS with a caliper equal to `caliper` times
+#'     SD(PS). This reproduces the rwetools 0.1.x scale.
+#'   \item `"raw"`: match on PS with an absolute raw-PS caliper.
 #' }
+#' Calipers apply to nearest matching, not subclass matching.
+#'
+#' @section Choosing the downstream effect block:
+#' A no-replacement nearest 1:1 cohort with unit `.match_weights` can be passed
+#' to `in_df_match` in [estimate_hr()], [estimate_ir()], or [estimate_risk()];
+#' pass `match_id` as `if_match_match_id` for set-aware inference where the
+#' effect function supports it.
+#'
+#' Other designs are weight-defined. Subclass matching returns subclass weights.
+#' Variable-ratio matching, and fixed `ratio > 1` when some exposed units find
+#' fewer than the requested controls, can also return non-uniform control
+#' weights. Pass these cohorts as `in_df_weight` with
+#' `if_weight_weight_var = ".match_weights"` to honour the weights. This route
+#' does not preserve matched-set clustering; see the effect-function
+#' documentation for the resulting inference limitations.
+#'
+#' The same weights are required for balance assessment. The built-in matched
+#' Table 1 automatically applies `.match_weights` whenever the returned values
+#' are non-unit, including subclass and variable/incomplete nearest 1:k output.
+#'
+#' With `replace = TRUE`, a reused control can belong to several matched sets;
+#' its `match_id` contains the joined set ids. Such output is rejected by the
+#' effect matched block. The weighted route honours reuse weights but is not an
+#' Abadie-Imbens replacement variance, and this function does not return the
+#' one-row-per-unit-per-pair representation needed for pair-aware replacement
+#' inference.
+#'
+#' @param in_df Data frame containing a precomputed PS, or `NULL` when
+#'   `in_csvpath` is used.
+#' @param in_csvpath Character path to an input CSV, or `NULL`. If both inputs
+#'   are supplied, `in_df` is used with a warning.
+#' @param out_csvpath_matcheddata Character path for the matched-cohort CSV, or
+#'   `NULL`.
+#' @param out_csvpath_crudedata_w_matchindicator Character path for the input
+#'   cohort augmented with matching indicators, or `NULL`.
+#' @param out_xlsxpath_report Character path for an Excel diagnostic report,
+#'   or `NULL`.
+#' @param out_dir_plots Character directory for diagnostic PNG files, or
+#'   `NULL`.
+#' @param exposure_var Character name of the exposure column. The default is
+#'   `"exp"`.
+#' @param exp_value,ref_value Values identifying the exposed and reference
+#'   arms.
+#' @param ps_var Character name of the propensity-score column.
+#' @param method `"nearest"` or `"subclass"`. Optimal and full matching are
+#'   not supported.
+#' @param ratio Nearest-neighbour control ratio, 1:k. The default is 1.
+#' @param min_controls,max_controls Optional variable-ratio bounds passed as
+#'   `min.controls` and `max.controls` for nearest matching.
+#' @param m_order Optional nearest-matching order passed as `m.order`.
+#' @param subclass_n Optional number of subclasses. `NULL` uses MatchIt's
+#'   default.
+#' @param caliper Positive caliper width interpreted on `caliper_scale`. The
+#'   default is 0.2.
+#' @param caliper_scale `"logit_ps_sd"`, `"raw_ps_sd"`, or `"raw"`; see
+#'   **Caliper scales**.
+#' @param replace Logical; perform nearest matching with replacement.
+#' @param trim_method PS trimming before matching: `"none"`, `"crump"`, or
+#'   `"sturmer"`. Trimming changes the analytic population.
+#' @param trim_crump_alpha Crump symmetric bound in (0, 0.5).
+#' @param trim_sturmer_p Sturmer arm-specific tail proportion in (0, 0.5).
+#' @param make_crude_matched_table1 Logical; include crude and matched Table 1
+#'   sheets in the diagnostic report.
+#' @param table1_cont_vars,table1_binary_vars Character vectors of continuous
+#'   and binary variables for Table 1. When all Table 1 variable arguments are
+#'   `NULL`, types are detected automatically.
+#' @param table1_cat_vars Character vector, or named level list, for
+#'   categorical variables in Table 1.
+#' @param std_diff_threshold Absolute SMD threshold for diagnostics. The
+#'   default is 0.1 on the raw SMD scale.
+#' @param readme_text Optional text for the report's README worksheet.
+#' @param verbose Logical; print progress and diagnostic messages.
+#'
+#' @return Invisibly returns the matched-cohort data frame. It includes
+#'   `matched`, `match_id`, and `.match_weights`; internal recoding columns are
+#'   removed.
+#'
+#' @section Side effects:
+#' Writes matched/crude CSV files, an Excel report, or PNG figures when the
+#' corresponding output arguments are supplied, creating parent directories
+#' as needed.
 #'
 #' @export
 #'
 #' @examples
 #' \donttest{
-#' # Requires MatchIt
 #' if (requireNamespace("MatchIt", quietly = TRUE)) {
-#'   csv_path <- system.file("extdata", "sample_data.csv", package = "rwetools")
+#'   df <- read.csv(system.file("extdata", "sample_data.csv",
+#'                              package = "rwetools"))
 #'   df_ps <- estimate_ps(
-#'     in_df        = read.csv(csv_path),
-#'     exposure_var = "exposure",
-#'     class_vars   = c("cat1", "cat2", "cat3", "cat4"),
-#'     cont_vars    = c("cont1", "cont2", "cont3"),
-#'     verbose      = FALSE
+#'     in_df = df, exposure_var = "exposure",
+#'     class_vars = c("cat1", "cat2", "cat3", "cat4"),
+#'     cont_vars = c("cont1", "cont2", "cont3"), verbose = FALSE
 #'   )
-#'
 #'   matched <- create_ps_matched_cohort(
-#'     in_df        = df_ps,
-#'     exposure_var = "exposure",
-#'     ps_var       = "ps",
-#'     ratio        = 1,
-#'     caliper      = 0.2,
-#'     verbose      = FALSE
+#'     in_df = df_ps, exposure_var = "exposure", ps_var = "ps",
+#'     ratio = 1, caliper = 0.2, verbose = FALSE
 #'   )
 #'   nrow(matched)
 #' }
@@ -1168,9 +1199,9 @@ create_ps_matched_cohort <- function(
   caliper_scale <- match.arg(caliper_scale)
   method        <- match.arg(method)
   trim_method   <- match.arg(trim_method)
-  if (exp_value == ref_value) {
-    stop("exp_value and ref_value must be different")
-  }
+  # exp_value / ref_value are validated by .canonicalize_exposure() in Step 2,
+  # so that this function shares one set of type and value semantics with
+  # estimate_ps() and the weighting stages.
 
   # Check MatchIt package
   if (!requireNamespace("MatchIt", quietly = TRUE)) {
@@ -1218,13 +1249,17 @@ create_ps_matched_cohort <- function(
   if (verbose) message("\nStep 2: Data Preparation")
   if (verbose) message("----------------------------------------")
   
-  # Create binary exposure variable for MatchIt
-  unique_exposure_vals <- unique(data_work[[exposure_var]])
-  
-  # Create .treat variable (1 = treated, 0 = control)
-  data_work$.treat <- ifelse(data_work[[exposure_var]] == exp_value, 1L,
-                             ifelse(data_work[[exposure_var]] == ref_value, 0L, NA_integer_))
-  
+  # Create the binary exposure MatchIt fits on. The shared helper gives this
+  # function the same type/value semantics as estimate_ps() and the weighting
+  # stages (single non-missing values, exp_value != ref_value, both present in
+  # the data, character-key comparison so factor/character/numeric behave
+  # alike). exposure_var itself is never overwritten, so the returned cohort
+  # keeps the caller's original labels row-for-row.
+  data_work$.treat <- .canonicalize_exposure(
+    data_work[[exposure_var]], exp_value, ref_value,
+    exposure_var = exposure_var, require_both = TRUE, warn_unmatched = TRUE
+  )$value
+
   # Remove observations with missing exposure
   n_missing_exp <- sum(is.na(data_work$.treat))
   if (n_missing_exp > 0) {
@@ -1308,6 +1343,14 @@ create_ps_matched_cohort <- function(
   }
   if (method == "nearest") {
     if (verbose) message(sprintf("With replacement: %s", ifelse(replace, "Yes", "No")))
+    if (replace) {
+      message("Note: a with-replacement cohort cannot be analysed through the ",
+              "matched block of estimate_hr / estimate_ir / estimate_risk ",
+              "(a reused control belongs to several matched sets, so neither ",
+              "the pair-clustered SE nor the pair-resample bootstrap is ",
+              "defined). Analyse it as in_df_weight with ",
+              "if_weight_weight_var = '.match_weights'.")
+    }
   }
   if (verbose) message(sprintf("Estimand: ATT (Average Treatment Effect on Treated)"))
 
@@ -1619,9 +1662,9 @@ create_ps_matched_cohort <- function(
           NULL
         })
         
-        # Generate Matched Table 1. For subclass the matched cohort is
-        # not 1:k, so balance must be assessed with the matching weights.
-        use_match_weights <- method == "subclass"
+        # Subclass and variable/incomplete nearest 1:k matching can both
+        # produce non-unit weights; use them whenever they materially differ.
+        use_match_weights <- any(abs(matched_table1_data$.match_weights - 1) > 1e-8)
         if (verbose) message("    Creating matched (post-matching) Table 1...")
         matched_table1 <- tryCatch({
           build_table1(
@@ -1855,64 +1898,88 @@ create_ps_matched_cohort <- function(
 
 
 # FS create_ps_fs_weights  ################################
-#' Calculate PS Fine Stratification Weights, Trim Non-overlapping Regions,
-#' and Generate Diagnostics
+#' Create Propensity-Score Fine-Stratification Weights
 #'
-#' Combined function that (1) creates PS fine strata, (2) calculates stratification
-#' weights, (3) trims non-overlapping PS regions, and optionally (4) builds a
-#' crude vs weighted balance table (Table 1) and (5) generates diagnostic plots.
+#' Divides the propensity-score distribution into fine strata and assigns
+#' ATT or ATE weights from the exposed/reference composition of each retained
+#' stratum. It can first restrict the cohort to common propensity-score support
+#' and can produce balance tables, plots, and an Excel diagnostic report.
 #'
-#' @param in_df Data frame with PS already calculated (the "crude" / untrimmed data)
-#' @param out_csvpath Character. Path for output CSV of trimmed+weighted data (optional)
-#' @param out_xlsxpath_report Character. Path for Excel diagnostic report (optional)
-#' @param out_dir_plots Character. Directory to save diagnostic plots (NULL = skip plots)
-#' @param trim_nonoverlap_region Logical. Trim non-overlapping PS regions (default TRUE)
-#' @param exposure_var Character. Name of binary exposure variable (default "exp")
-#' @param exp_value Value representing exposed group (default 1)
-#' @param ref_value Value representing reference group (default 0)
-#' @param ps_var Character. Name of PS variable in the data (required)
-#' @param weight_var Character. Name for the stratification weight variable (default "ps_fs_wt")
-#' @param number_of_strata Integer. Number of strata to create (default 50)
-#' @param stratification_method Character. "exposure" or "cohort" (default "exposure")
-#' @param estimand Character. "ATT" or "ATE" (default "ATT")
-#' @param make_unwt_wt_table1 Logical. Build crude vs weighted balance table (default FALSE)
-#' @param table1_cont_vars Character vector. Continuous vars for Table 1 (auto-detected if NULL)
-#' @param table1_binary_vars Character vector. Binary vars for Table 1 (auto-detected if NULL)
-#' @param table1_cat_vars Character vector. Categorical vars for Table 1 (auto-detected if NULL)
-#' @param std_diff_threshold Numeric. Threshold for acceptable standardised difference (default 0.1)
-#' @param readme_text Character. Optional message for README sheet in Excel report
-#' @param verbose Logical. Print progress messages (default TRUE).
+#' `stratification_method = "exposure"` forms cut points from the exposed arm;
+#' `"cohort"` forms them from the full cohort. Strata without both arms are
+#' excluded before weights are assigned. The output keeps the caller's original
+#' exposure labels and row alignment, and adds `strata` plus the requested
+#' `weight_var`.
 #'
-#' @return Invisibly returns the trimmed+weighted data frame.
+#' @section Exposure coding:
+#' `exp_value` and `ref_value` are always recoded internally to 1 and 0 for
+#' trimming, strata construction, weights, and diagnostics. They must be
+#' distinct scalar, non-missing values and both must occur. Rows matching
+#' neither value are reported and removed. The returned exposure column is
+#' restored to its original labels. For a logical exposure, use `TRUE` and
+#' `FALSE` rather than numeric 1 and 0.
 #'
-#' @section Side Effects:
-#' \itemize{
-#'   \item Writes a CSV file when \code{out_csvpath} is provided.
-#'   \item Creates directories, writes an Excel diagnostic report, and saves
-#'     PNG plot files when the corresponding path arguments are supplied.
-#' }
+#' @section Using the result in a hazard model:
+#' The `strata` column records the PS fine stratum used to construct the
+#' weights. Do not automatically pass this column as `strata_var` to
+#' [estimate_hr()]. Fine-stratification weighting and
+#' `survival::strata()` are distinct adjustments; combining them changes the
+#' fitted hazard model and should be an explicit design decision.
+#'
+#' @param in_df Data frame containing exposure and an estimated propensity
+#'   score.
+#' @param out_csvpath Character path for the weighted cohort CSV, or `NULL`.
+#' @param out_xlsxpath_report Character path for an Excel diagnostic report,
+#'   or `NULL`.
+#' @param out_dir_plots Character directory for diagnostic PNG files, or
+#'   `NULL`.
+#' @param trim_nonoverlap_region Logical; restrict to the intersection of the
+#'   two arm-specific PS ranges before creating strata.
+#' @param exposure_var Character name of the exposure column. The default is
+#'   `"exp"`.
+#' @param exp_value,ref_value Values identifying the exposed and reference
+#'   arms.
+#' @param ps_var Character name of the propensity-score column. Required.
+#' @param weight_var Character name for the created weight column. The default
+#'   is `"ps_fs_wt"`.
+#' @param number_of_strata Positive number of fine strata. The default is 50.
+#' @param stratification_method `"exposure"` or `"cohort"`; see the
+#'   description.
+#' @param estimand `"ATT"` or `"ATE"`.
+#' @param make_unwt_wt_table1 Logical; include crude and weighted balance
+#'   tables in the diagnostic report.
+#' @param table1_cont_vars,table1_binary_vars Character vectors of continuous
+#'   and binary variables for Table 1. When all Table 1 variable arguments are
+#'   `NULL`, variable types are detected automatically.
+#' @param table1_cat_vars Character vector, or named level list, for
+#'   categorical variables in Table 1.
+#' @param std_diff_threshold Absolute SMD threshold used in diagnostics. The
+#'   default is 0.1 on the raw SMD scale.
+#' @param readme_text Optional text for the report's README worksheet.
+#' @param verbose Logical; print progress and diagnostic messages.
+#'
+#' @return Invisibly returns the retained, weighted data frame with `strata`
+#'   and `weight_var` columns.
+#'
+#' @section Side effects:
+#' Writes a CSV, Excel workbook, or diagnostic PNG files when the corresponding
+#' output arguments are supplied, creating parent directories as needed.
 #'
 #' @export
 #'
 #' @examples
-#' csv_path <- system.file("extdata", "sample_data.csv", package = "rwetools")
+#' df <- read.csv(system.file("extdata", "sample_data.csv",
+#'                            package = "rwetools"))
 #' df_ps <- estimate_ps(
-#'   in_df        = read.csv(csv_path),
-#'   exposure_var = "exposure",
-#'   class_vars   = c("cat1", "cat2", "cat3", "cat4"),
-#'   cont_vars    = c("cont1", "cont2", "cont3"),
-#'   verbose      = FALSE
+#'   in_df = df, exposure_var = "exposure",
+#'   class_vars = c("cat1", "cat2", "cat3", "cat4"),
+#'   cont_vars = c("cont1", "cont2", "cont3"), verbose = FALSE
 #' )
-#'
 #' result <- create_ps_fs_weights(
-#'   in_df                 = df_ps,
-#'   exposure_var          = "exposure",
-#'   ps_var                = "ps",
-#'   weight_var            = "fs_wt",
-#'   number_of_strata      = 10,
-#'   stratification_method = "exposure",
-#'   estimand              = "ATT",
-#'   verbose               = FALSE
+#'   in_df = df_ps, exposure_var = "exposure", ps_var = "ps",
+#'   weight_var = "fs_wt", number_of_strata = 10,
+#'   stratification_method = "exposure", estimand = "ATT",
+#'   verbose = FALSE
 #' )
 #' summary(result$fs_wt)
 create_ps_fs_weights <- function(
@@ -1971,15 +2038,15 @@ create_ps_fs_weights <- function(
   data_work  <- in_df                        # working copy (will be trimmed)
   in_crude   <- in_df                        # keep untouched copy for diagnostics
   
-  # Recode exposure to 0/1 if needed 
-  uv <- unique(data_work[[exposure_var]])
-  if (!(all(uv %in% c(0, 1)))) {
-    if (verbose) message("Recoding exposure variable...")
-    data_work[[exposure_var]] <- ifelse(data_work[[exposure_var]] == exp_value, 1L,
-                                        ifelse(data_work[[exposure_var]] == ref_value, 0L, NA_integer_))
-    in_crude[[exposure_var]]  <- ifelse(in_crude[[exposure_var]] == exp_value, 1L,
-                                        ifelse(in_crude[[exposure_var]] == ref_value, 0L, NA_integer_))
-  }
+  # Canonicalize exposure for every internal stage.  Row-order IDs below let
+  # us restore the original labels after trimming/stratification.
+  exposure_01 <- .canonicalize_exposure(
+    data_work[[exposure_var]], exp_value, ref_value,
+    exposure_var = exposure_var, require_both = TRUE, warn_unmatched = TRUE
+  )
+  if (verbose) message(sprintf("Internal exposure coding: %s -> 1, %s -> 0", exp_value, ref_value))
+  data_work[[exposure_var]] <- exposure_01$value
+  in_crude[[exposure_var]] <- exposure_01$value
   
   # Create internal row-order ID (used to restore order after rbind in exposure stratification)
   # Generate a collision-safe column name
@@ -2180,6 +2247,12 @@ create_ps_fs_weights <- function(
   if (n_removed > 0) {
     if (verbose) message(sprintf("\n%d observations removed (strata with only one exposure group)", n_removed))
   }
+
+  # Public output copy: restore the input exposure labels and remove the
+  # internal row-order column.  Diagnostics continue to use canonical 0/1.
+  final_output <- final_data
+  final_output[[exposure_var]] <- in_df[[exposure_var]][final_output[[.row_id_col]]]
+  final_output[[.row_id_col]] <- NULL
   
   # Add PS statistics to strata summary
   strata_complete$n_total  <- strata_complete$n_exp + strata_complete$n_ref
@@ -2266,7 +2339,7 @@ create_ps_fs_weights <- function(
   if (!is.null(out_csvpath)) {
     out_dir <- dirname(out_csvpath)
     if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
-    utils::write.csv(final_data, file = out_csvpath, row.names = FALSE)
+    utils::write.csv(final_output, file = out_csvpath, row.names = FALSE)
     if (verbose) message(sprintf("Data saved to CSV: %s", out_csvpath))
   }
   
@@ -2298,8 +2371,8 @@ create_ps_fs_weights <- function(
     unweighted_table1 <- build_table1(
       in_df             = in_crude,
       exposure_var      = exposure_var,
-      exp_value         = exp_value,
-      ref_value         = ref_value,
+      exp_value         = 1,
+      ref_value         = 0,
       cont_vars         = table1_cont_vars,
       binary_vars       = table1_binary_vars,
       cat_vars          = table1_cat_vars,
@@ -2312,8 +2385,8 @@ create_ps_fs_weights <- function(
     weighted_table1 <- build_table1(
       in_df             = final_data,
       exposure_var      = exposure_var,
-      exp_value         = exp_value,
-      ref_value         = ref_value,
+      exp_value         = 1,
+      ref_value         = 0,
       cont_vars         = table1_cont_vars,
       binary_vars       = table1_binary_vars,
       cat_vars          = table1_cat_vars,
@@ -2556,13 +2629,10 @@ create_ps_fs_weights <- function(
     if (verbose) message(sprintf("Diagnostics saved to: %s", out_xlsxpath_report))
   }
   
-  # Clean up internal columns
-  final_data[[.row_id_col]] <- NULL
-  
   # DONE
   if (verbose) message("\n========================================")
   if (verbose) message("PS FINE STRATIFICATION COMPLETE")
   if (verbose) message("========================================")
   
-  return(invisible(final_data))
+  return(invisible(final_output))
 }

@@ -3,14 +3,20 @@
 #' Validates the in_df_crude / in_df_weight / in_df_match data blocks and
 #' their if_* companions (API v2 directive): weight XOR match; crude-less
 #' weight/match calls allowed; orphan if_* arguments are ignored with a
-#' message; required variables must exist in every provided block.
+#' message; required variables must exist in every provided block. Also
+#' rejects matched-cohort designs the matched block cannot analyse:
+#' with-replacement match ids (backlog Item 6) and non-unit matching weights
+#' (Item 5).
 #'
 #' @param in_df_crude,in_df_weight,in_df_match Data blocks (or NULL).
 #' @param if_weight_weight_var Weight column name for in_df_weight, or NULL.
 #' @param if_match_match_id Match-set id column name for in_df_match, or NULL.
 #' @param required_vars Character vector of columns every provided block must
-#'   contain (exposure/outcome/time and, when used, stratification etc.).
+#'   contain (exposure/outcome/time and, when used, strata etc.).
 #' @param verbose Logical; emit the ignore-messages.
+#' @note Matched-set composition (strict 1:1) is NOT checked here: it needs the
+#'   canonicalized exposure and the complete-case rows, so it lives in
+#'   \code{prep_effect_block()} via \code{check_matched_1to1_support()}.
 #' @return List: blocks (named list Crude/Weighted/Matched, only the provided
 #'   ones), weight_var (validated or NULL), match_id (validated or NULL).
 #' @noRd
@@ -57,9 +63,52 @@ validate_effect_blocks <- function(in_df_crude = NULL,
                     "' not found in in_df_match."))
       }
       match_id <- if_match_match_id
+
+      # Item 6: with-replacement matching. create_ps_matched_cohort() joins the
+      # ids of every set a reused control belongs to with ";" (e.g.
+      # "M00001;M00007"). Such a value is not a cluster: cluster(match_id) and
+      # the pair-resample bootstrap would both treat it as a separate third
+      # set, which is neither the Abadie-Imbens variance nor a valid
+      # sandwich cluster.
+      if (any(grepl(";", in_df_match[[if_match_match_id]], fixed = TRUE),
+              na.rm = TRUE)) {
+        stop("in_df_match contains match ids that name more than one matched ",
+             "set (e.g. 'M00001;M00007'), which happens with ",
+             "create_ps_matched_cohort(replace = TRUE). With-replacement ",
+             "matched cohorts are not supported in the matched block: the ",
+             "pair-clustered SE and the pair-resample bootstrap both require ",
+             "each row to belong to exactly one set. Either match without ",
+             "replacement, or pass the cohort as in_df_weight with ",
+             "if_weight_weight_var = '.match_weights' -- which gives a ",
+             "control-reuse-weighted analysis with a weight-based robust SE, ",
+             "not the Abadie-Imbens with-replacement variance.")
+      }
     }
   } else if (!is.null(if_match_match_id)) {
     if (verbose) message("if_match_match_id is ignored because in_df_match was not provided.")
+  }
+
+  # Item 5: the matched block fits unweighted models.  It therefore accepts
+  # matching weights only when every retained row has unit weight.  The older
+  # within-arm-constant rule was sufficient for arm-level rates/risks, but not
+  # for the Cox partial likelihood when the two arms carried different
+  # constants.  Reject that ambiguity instead of silently choosing an
+  # estimand/model the caller did not request.
+  if (!is.null(in_df_match) && ".match_weights" %in% names(in_df_match)) {
+    mw <- in_df_match$.match_weights
+    invalid <- !is.numeric(mw) || anyNA(mw) || any(!is.finite(mw)) ||
+      any(abs(mw - 1) > 1e-8)
+    if (invalid) {
+      stop("in_df_match is analysed as an unweighted strict 1:1 matched ",
+           "cohort, so every .match_weights value must equal 1. Non-unit ",
+           "weights can change at least one supported estimand (including ",
+           "the Cox partial likelihood). For a weight-defined analysis, pass ",
+           "the cohort as in_df_weight with if_weight_weight_var = ",
+           "'.match_weights'. That route honours the weights but does not use ",
+           "matched-set clustering, so it is not a substitute for ",
+           "design-aware inference for variable-ratio, subclass, or ",
+           "with-replacement matching.")
+    }
   }
 
   # --- required variables per provided block ---
@@ -75,6 +124,218 @@ validate_effect_blocks <- function(in_df_crude = NULL,
   }
 
   list(blocks = blocks, weight_var = weight_var, match_id = match_id)
+}
+
+
+# HELPER: per-block preparation, shared by all effect estimators #############
+#' Prepares one analysis block: canonicalizes exposure so that 1 is always
+#' \code{exp_value} and 0 always \code{ref_value}, optionally derives
+#' \code{person_years} from the follow-up time, drops incomplete rows on the
+#' columns the analysis actually uses, requires both arms to survive, and
+#' (optionally) enforces an unambiguous competing-event coding.
+#'
+#' The exposure recode is UNCONDITIONAL. Every downstream calculator selects
+#' arms with a hard-coded \code{== 1} / \code{== 0}, so skipping the recode
+#' when the column already looks like 0/1 -- as 0.4.0 did -- silently ignored
+#' \code{exp_value = 0, ref_value = 1} and analysed the wrong arm (backlog
+#' Item 8).
+#'
+#' Promoted out of the 0.4.0 \code{estimate_hr_ir()} local \code{prep_block()}
+#' when that function was split, so both public functions share one
+#' preparation path. The complete-case column set is deliberately
+#' function-specific: \code{estimate_ir()} passes no \code{strata_var} and no
+#' \code{competing_var}, so it keeps rows that \code{estimate_hr()} would drop
+#' when those columns contain NA.
+#'
+#' @param df Data frame for one block.
+#' @param block Block label ("Crude", "Weighted", "Matched") -- used for
+#'   messages and to decide which optional columns are required.
+#' @param exposure_var,exp_value,ref_value Exposure column and the two values
+#'   identifying the exposed and reference arms. Must differ. Rows matching
+#'   neither are dropped with a warning.
+#' @param outcome_var,followuptime_var Column names (character).
+#' @param time_unit One of "days", "months", "years" to derive
+#'   \code{person_years}, or NULL to skip that derivation.
+#' @param weight_var Weight column (required for the Weighted block).
+#' @param match_id Match-set id column (Matched block), or NULL.
+#' @param strata_var Stratification column to require complete, or NULL.
+#' @param competing_var Competing-event column to require complete, or NULL.
+#' @param check_competing Logical. When TRUE, \code{competing_var} must be
+#'   binary and no row may be both the event of interest and a competing
+#'   event.
+#' @param competing_context Label used in competing-event errors. One of
+#'   "Fine-Gray" or "Aalen-Johansen".
+#' @param verbose Logical.
+#' @return The prepared data frame.
+#' @noRd
+prep_effect_block <- function(df, block, exposure_var, exp_value, ref_value,
+                              outcome_var, followuptime_var,
+                              time_unit = NULL,
+                              weight_var = NULL, match_id = NULL,
+                              strata_var = NULL, competing_var = NULL,
+                              check_competing = FALSE,
+                              competing_context = "Fine-Gray",
+                              verbose = TRUE) {
+  # --- canonicalize exposure to 1 = exp_value, 0 = ref_value ---------------
+  # ALWAYS recoded (backlog Item 8). Up to 0.4.0 the recode was skipped when
+  # the column already looked like 0/1, so exp_value = 0 / ref_value = 1 on an
+  # already-0/1 column was silently ignored and every downstream calculator --
+  # which hard-codes == 1 / == 0 -- analysed the wrong arm, inverting the
+  # hazard/rate ratio and flipping the sign of the rate difference without a
+  # word. Recoding unconditionally is idempotent in the default case.
+  ev <- df[[exposure_var]]
+  already_canonical <- is.numeric(ev) && all(ev[!is.na(ev)] %in% c(0, 1)) &&
+    isTRUE(exp_value == 1) && isTRUE(ref_value == 0)
+  exposure_01 <- .canonicalize_exposure(
+    ev, exp_value, ref_value, exposure_var = exposure_var,
+    require_both = FALSE, warn_unmatched = FALSE
+  )
+  n_unmatched <- exposure_01$n_unmatched
+  df[[exposure_var]] <- exposure_01$value
+  if (!already_canonical && verbose) {
+    message(sprintf("Recoding exposure (%s block): '%s' -> 1 (exposed), '%s' -> 0 (reference).",
+                    block, exp_value, ref_value))
+  }
+  if (n_unmatched > 0L) {
+    warning(sprintf(paste0("%d row(s) in the %s block match neither exp_value ",
+                           "('%s') nor ref_value ('%s') and were dropped."),
+                    n_unmatched, block, exp_value, ref_value))
+  }
+
+  # person-years
+  used <- c(outcome_var, exposure_var, followuptime_var)
+  if (!is.null(time_unit)) {
+    df$person_years <- switch(time_unit,
+      days   = as.numeric(df[[followuptime_var]]) / 365.25,
+      months = as.numeric(df[[followuptime_var]]) / 12,
+      years  = as.numeric(df[[followuptime_var]])
+    )
+    used <- c(used, "person_years")
+  }
+
+  # complete cases on the columns this analysis uses
+  if (block == "Weighted") used <- c(used, weight_var)
+  if (block == "Matched" && !is.null(match_id)) used <- c(used, match_id)
+  if (!is.null(strata_var)) used <- c(used, strata_var)
+  if (!is.null(competing_var)) used <- c(used, competing_var)
+  n0 <- nrow(df)
+  df <- df[stats::complete.cases(df[, used, drop = FALSE]), , drop = FALSE]
+  if (nrow(df) < n0) {
+    warning(sprintf("%d observation(s) with missing values removed from the %s block",
+                    n0 - nrow(df), block))
+  }
+
+  # both arms must survive, or every contrast below is undefined
+  arm_n <- table(factor(df[[exposure_var]], levels = c(0L, 1L)))
+  if (any(arm_n == 0L)) {
+    empty <- if (arm_n[["1"]] == 0L) {
+      sprintf("exposed (exp_value = '%s')", exp_value)
+    } else {
+      sprintf("reference (ref_value = '%s')", ref_value)
+    }
+    stop(sprintf(paste0("The %s block has no %s rows after recoding and ",
+                        "complete-case removal; a contrast cannot be estimated."),
+                 block, empty))
+  }
+
+  # competing risks need an unambiguous event type
+  if (check_competing) {
+    if (!competing_context %in% c("Fine-Gray", "Aalen-Johansen")) {
+      stop("competing_context must be 'Fine-Gray' or 'Aalen-Johansen'.")
+    }
+    cev <- df[[competing_var]]
+    cev_vals <- unique(cev[!is.na(cev)])
+    competing_arg <- if (competing_context == "Aalen-Johansen") {
+      "if_aj_competing_event_var"
+    } else {
+      "if_fg_competing_event_var"
+    }
+    if (!all(cev_vals %in% c(0, 1))) {
+      stop(paste0(competing_arg, " ('", competing_var,
+                   "') must be binary (0/1) in the ", block, " block."))
+    }
+    n_both <- sum(df[[outcome_var]] == 1 & cev == 1, na.rm = TRUE)
+    if (n_both > 0L) {
+      stop(sprintf(paste0("%s: %d row(s) in the %s block have both ",
+                          "outcome_var == 1 and %s == 1, ",
+                          "which is ambiguous. Resolve these first."),
+                   competing_context, n_both, block, competing_arg))
+    }
+  }
+
+  if (block == "Matched" && !is.null(match_id)) {
+    check_matched_1to1_support(df, exposure_var, match_id, block)
+  }
+
+  df
+}
+
+
+# HELPER: strict matched-set composition #####################################
+#' Require each retained match id to identify exactly one exposed/reference
+#' pair. Runs after recoding and complete-case removal, so a pair broken by a
+#' missing analysis value is rejected rather than silently analysed as an
+#' independent or malformed cluster.
+#' @noRd
+check_matched_1to1_support <- function(df, exp_var, match_id, block = "Matched") {
+  tab <- table(as.character(df[[match_id]]),
+               factor(df[[exp_var]], levels = c(0L, 1L)))
+  bad <- rownames(tab)[rowSums(tab) != 2L | tab[, "0"] != 1L | tab[, "1"] != 1L]
+  if (length(bad) > 0L) {
+    shown <- utils::head(bad, 5L)
+    detail <- vapply(shown, function(id) {
+      sprintf("'%s' (%d reference, %d exposed)", id, tab[id, "0"], tab[id, "1"])
+    }, character(1))
+    suffix <- if (length(bad) > length(shown)) "; ..." else ""
+    stop(sprintf(paste0(
+      "The %s block supports strict 1:1 matching only: every match id must ",
+      "contain exactly one reference and one exposed row after complete-case ",
+      "removal. Invalid set(s): %s%s"
+    ), block, paste(detail, collapse = "; "), suffix))
+  }
+  invisible(TRUE)
+}
+
+
+# HELPER: arm x stratum support for a stratified hazard model ###########
+#' Requires every level of \code{strata_var} to contain rows from BOTH
+#' exposure arms.
+#'
+#' A \code{survival::strata()} level in which only one arm appears contributes
+#' nothing to the stratified partial likelihood -- there is no within-stratum
+#' comparison to make -- and \code{coxph()} absorbs it silently. The reported
+#' conditional common (s)HR is then estimated on a subset of the data the
+#' caller never asked to restrict to, with no indication in the output. Since
+#' a stratum missing an entire arm almost always signals a data problem
+#' (e.g. cohort-entry-year groups where the reference drug was not yet
+#' marketed), this is an error rather than a warning.
+#'
+#' Runs AFTER exposure recoding and complete-case removal, so it sees the rows
+#' the model will actually use.
+#'
+#' @param df One prepared analysis block (exposure already 0/1).
+#' @param exp_var,strat_var Column names (character).
+#' @param block Block label, for the message.
+#' @return \code{invisible(TRUE)}; called for the side effect.
+#' @noRd
+check_arm_stratum_support <- function(df, exp_var, strat_var, block) {
+  tab <- table(as.character(df[[strat_var]]),
+               factor(df[[exp_var]], levels = c(0L, 1L)))
+  empty <- rownames(tab)[tab[, "0"] == 0L | tab[, "1"] == 0L]
+  if (length(empty) > 0L) {
+    detail <- vapply(empty, function(lv) sprintf("'%s' (%d reference, %d exposed)",
+                                                 lv, tab[lv, "0"], tab[lv, "1"]),
+                     character(1))
+    stop(sprintf(paste0("strata_var '%s' has %d level(s) in the %s block with ",
+                        "no rows in one exposure arm: %s. survival::strata() ",
+                        "would drop these levels from the partial likelihood ",
+                        "without saying so, so the reported hazard ratio would ",
+                        "silently describe only the remaining strata. Collapse ",
+                        "or exclude these levels first."),
+                 strat_var, length(empty), block,
+                 paste(detail, collapse = "; ")))
+  }
+  invisible(TRUE)
 }
 
 
@@ -162,16 +423,31 @@ calc_crude_ir_ird <- function(df, exp_var, out_var, py_var, conf_level, z, suffi
   return(result)
 }
 
-# HELPER: IR/IRD calculation (Weighted data, No Stratification) #####
+# HELPER: design-based IR/IRD (analysis weights and/or clustering) #####
+#' IR / IRD for a block whose variance needs a design-based sandwich: an
+#' analysis-weighted block (wt_var, e.g. IPTW -- matrix r4/r8) and/or a matched
+#' block whose rows are clustered in matched sets (cluster_var).
+#'
+#' Point estimates are the plain (weighted) sums either way; only the variance
+#' uses the joint cell fit. With wt_var = NULL the sums reduce exactly to
+#' calc_crude_ir_ird()'s, so routing a matched block here changes the intervals
+#' and nothing else. Matched-set clustering replaces the independent-Poisson
+#' Garwood / Wald intervals with cluster-robust log-Wald and joint-delta ones,
+#' which may be narrower OR wider than the independence intervals depending on
+#' the sign of the within-set covariance.
 #' @noRd
-calc_crude_ir_ird_weighted <- function(df, exp_var, out_var, py_var, wt_var, conf_level, z, suffix, multiplier, ir_base) {
+calc_crude_ir_ird_design <- function(df, exp_var, out_var, py_var,
+                                     wt_var = NULL, cluster_var = NULL,
+                                     conf_level, z, suffix, multiplier, ir_base) {
+  w <- if (is.null(wt_var)) rep(1, nrow(df)) else df[[wt_var]]
+  df$.w_ <- w
 
   summary_by_group <- do.call(rbind, lapply(split(df, df[[exp_var]]), function(g) {
     data.frame(
       exp_val      = g[[exp_var]][1],
-      n_subjects   = sum(g[[wt_var]], na.rm = TRUE),
-      n_events     = sum(g[[out_var]] * g[[wt_var]], na.rm = TRUE),
-      person_years = sum(g[[py_var]] * g[[wt_var]], na.rm = TRUE),
+      n_subjects   = sum(g$.w_, na.rm = TRUE),
+      n_events     = sum(g[[out_var]] * g$.w_, na.rm = TRUE),
+      person_years = sum(g[[py_var]] * g$.w_, na.rm = TRUE),
       stringsAsFactors = FALSE
     )
   }))
@@ -182,7 +458,8 @@ calc_crude_ir_ird_weighted <- function(df, exp_var, out_var, py_var, wt_var, con
   # Robust (design-based sandwich) arm SE/CI via the joint cell engine
   # (matrix r4; P1): the previous rounded-qgamma path treated the weighted
   # event sum as a true Poisson count and was anti-conservative under IPTW.
-  cell_fit <- fit_weighted_rate_cells(df, exp_var, out_var, py_var, wt_var)
+  cell_fit <- fit_weighted_rate_cells(df, exp_var, out_var, py_var, wt_var,
+                                      cluster_var = cluster_var)
   if (!is.null(cell_fit)) {
     ctr <- wtd_rate_contrasts(cell_fit, z, multiplier)
     ord <- match(as.character(summary_by_group[[exp_var]]), ctr$ir$exp_val)
@@ -190,7 +467,7 @@ calc_crude_ir_ird_weighted <- function(df, exp_var, out_var, py_var, wt_var, con
     summary_by_group$ir_uci <- ctr$ir$uci[ord]
     summary_by_group$IR_SE  <- ctr$ir$se[ord]
   } else {
-    warning("Weighted IR robust variance fit failed; returning NA CIs. ",
+    warning("Design-based IR robust variance fit failed; returning NA CIs. ",
             "Consider the bootstrap.")
     summary_by_group$ir_lci <- NA_real_
     summary_by_group$ir_uci <- NA_real_
@@ -213,11 +490,11 @@ calc_crude_ir_ird_weighted <- function(df, exp_var, out_var, py_var, wt_var, con
   summary_by_group$IRD_SE <- se_ird
 
   # Total row: crude weighted rate with a robust (intercept-only cell) CI
-  total_ne <- sum(df[[out_var]] * df[[wt_var]], na.rm = TRUE)
-  total_py <- sum(df[[py_var]] * df[[wt_var]], na.rm = TRUE)
+  total_ne <- sum(df[[out_var]] * w, na.rm = TRUE)
+  total_py <- sum(df[[py_var]] * w, na.rm = TRUE)
   total_row <- data.frame(
     exp_val      = 99,
-    n_subjects   = sum(df[[wt_var]], na.rm = TRUE),
+    n_subjects   = sum(w, na.rm = TRUE),
     n_events     = total_ne,
     person_years = total_py,
     stringsAsFactors = FALSE
@@ -227,7 +504,8 @@ calc_crude_ir_ird_weighted <- function(df, exp_var, out_var, py_var, wt_var, con
 
   df_tot <- df
   df_tot$.const <- 0L
-  tot_fit <- fit_weighted_rate_cells(df_tot, ".const", out_var, py_var, wt_var)
+  tot_fit <- fit_weighted_rate_cells(df_tot, ".const", out_var, py_var, wt_var,
+                                     cluster_var = cluster_var)
   if (!is.null(tot_fit)) {
     tot_ctr <- wtd_rate_contrasts_total(tot_fit, z, multiplier)
     total_row$ir_lci <- tot_ctr$lci
@@ -247,250 +525,6 @@ calc_crude_ir_ird_weighted <- function(df, exp_var, out_var, py_var, wt_var, con
   result <- rename_ir_ird_cols(result, ir_base, suffix)
 
   return(result)
-}
-
-
-
-# HELPER: IR/IRD calculation (Unweighted data, Direct Standardization) ###############
-#' @noRd
-calc_standardized_ir_ird <- function(df, exp_var, out_var, py_var, strat_var, conf_level, z, suffix, multiplier, ir_base) {
-
-  # Stratum-level statistics
-  strat_stats <- do.call(rbind, lapply(
-    split(df, list(df[[strat_var]], df[[exp_var]]), drop = TRUE),
-    function(g) {
-      data.frame(
-        strat_val    = g[[strat_var]][1],
-        exp_val      = g[[exp_var]][1],
-        n_subjects   = nrow(g),
-        n_events     = sum(g[[out_var]], na.rm = TRUE),
-        person_years = sum(g[[py_var]], na.rm = TRUE),
-        stringsAsFactors = FALSE
-      )
-    }
-  ))
-  names(strat_stats)[1:2] <- c(strat_var, exp_var)
-  rownames(strat_stats) <- NULL
-  strat_stats$ir_value <- multiplier * strat_stats$n_events / strat_stats$person_years
-
-  # Total person-time per stratum (across both exposure groups)
-  strat_total_pt <- stats::aggregate(
-    df[[py_var]], by = list(df[[strat_var]]),
-    FUN = function(x) sum(x, na.rm = TRUE)
-  )
-  names(strat_total_pt) <- c(strat_var, "pt_total_stratum")
-  total_pt_all <- sum(strat_total_pt$pt_total_stratum)
-  strat_total_pt$std_weight <- strat_total_pt$pt_total_stratum / total_pt_all
-
-  # Merge weights into stratum stats
-  strat_stats <- merge(strat_stats, strat_total_pt, by = strat_var, all.x = TRUE)
-
-  # Standardized IR per exposure group: point/SE arithmetic unchanged; the
-  # arm CI is Fay-Feuer gamma (matrix r3; collapses to Garwood qgamma for a
-  # single stratum) instead of the previous log-normal interval [P2].
-  std_ir_by_group <- do.call(rbind, lapply(split(strat_stats, strat_stats[[exp_var]]), function(g) {
-    ff <- fay_feuer_ci(events = g$n_events, py = g$person_years,
-                       std_w = g$std_weight, conf_level = conf_level)
-    data.frame(
-      exp_val            = g[[exp_var]][1],
-      ir_value           = sum(g$ir_value * g$std_weight),
-      var_ir_std         = sum(g$std_weight^2 * g$n_events / g$person_years^2) * multiplier^2,
-      ir_lci             = multiplier * ff$lci,
-      ir_uci             = multiplier * ff$uci,
-      n_subjects         = sum(g$n_subjects),
-      n_events           = sum(g$n_events),
-      person_years       = sum(g$person_years),
-      stringsAsFactors   = FALSE
-    )
-  }))
-  names(std_ir_by_group)[1] <- exp_var
-  rownames(std_ir_by_group) <- NULL
-  std_ir_by_group$IR_SE <- sqrt(std_ir_by_group$var_ir_std)
-  std_ir_by_group$var_ir_std  <- NULL
-
-  # Standardized IRD
-  ref_ir <- std_ir_by_group$ir_value[std_ir_by_group[[exp_var]] == 0]
-  exp_ir <- std_ir_by_group$ir_value[std_ir_by_group[[exp_var]] == 1]
-  ref_se <- std_ir_by_group$IR_SE[std_ir_by_group[[exp_var]] == 0]
-  exp_se <- std_ir_by_group$IR_SE[std_ir_by_group[[exp_var]] == 1]
-
-  ird_value <- exp_ir - ref_ir
-  se_ird <- sqrt(ref_se^2 + exp_se^2)
-  ird_lci_value <- ird_value - z * se_ird
-  ird_uci_value <- ird_value + z * se_ird
-
-  # Build summary table
-  summary_by_group <- std_ir_by_group
-  summary_by_group$ird          <- ird_value
-  summary_by_group$ird_lci      <- ird_lci_value
-  summary_by_group$ird_uci      <- ird_uci_value
-  summary_by_group$IRD_SE <- se_ird
-
-  # Total row (crude, not standardized)
-  total_row <- data.frame(
-    exp_val      = 99,
-    n_subjects   = nrow(df),
-    n_events     = sum(df[[out_var]], na.rm = TRUE),
-    person_years = sum(df[[py_var]], na.rm = TRUE),
-    stringsAsFactors = FALSE
-  )
-  names(total_row)[1] <- exp_var
-  total_row$ir_value    <- multiplier * total_row$n_events / total_row$person_years
-  total_row$ir_lci      <- multiplier * stats::qgamma((1 - conf_level) / 2, total_row$n_events) / total_row$person_years
-  total_row$ir_uci      <- multiplier * stats::qgamma(1 - (1 - conf_level) / 2, total_row$n_events + 1) / total_row$person_years
-  total_row$IR_SE <- multiplier * sqrt(total_row$n_events) / total_row$person_years
-  total_row$ird          <- ird_value
-  total_row$ird_lci      <- ird_lci_value
-  total_row$ird_uci      <- ird_uci_value
-  total_row$IRD_SE <- se_ird
-
-  result <- rbind(summary_by_group, total_row)
-  result <- rename_ir_ird_cols(result, ir_base, suffix)
-
-  # Build stratum detail table
-  strat_stats$exposure_group <- ifelse(
-    strat_stats[[exp_var]] == 1, "Exposed",
-    ifelse(strat_stats[[exp_var]] == 0, "Reference", as.character(strat_stats[[exp_var]]))
-  )
-  names(strat_stats)[names(strat_stats) == "ir_value"] <- ir_base
-  stratum_detail <- strat_stats[, c(strat_var, "exposure_group", "n_subjects", "n_events", "person_years",
-                                    ir_base, "pt_total_stratum", "std_weight"), drop = FALSE]
-
-  return(list(summary = result, stratum_detail = stratum_detail))
-}
-
-# HELPER: IR/IRD calculation (Weighted data, Direct Standardization) ####################
-#' @noRd
-calc_standardized_ir_ird_weighted <- function(df, exp_var, out_var, py_var, wt_var, strat_var, conf_level, z, suffix, multiplier, ir_base) {
-
-  # Stratum-level weighted statistics
-  strat_stats <- do.call(rbind, lapply(
-    split(df, list(df[[strat_var]], df[[exp_var]]), drop = TRUE),
-    function(g) {
-      data.frame(
-        strat_val    = g[[strat_var]][1],
-        exp_val      = g[[exp_var]][1],
-        n_subjects   = sum(g[[wt_var]], na.rm = TRUE),
-        n_events     = sum(g[[out_var]] * g[[wt_var]], na.rm = TRUE),
-        person_years = sum(g[[py_var]] * g[[wt_var]], na.rm = TRUE),
-        stringsAsFactors = FALSE
-      )
-    }
-  ))
-  names(strat_stats)[1:2] <- c(strat_var, exp_var)
-  rownames(strat_stats) <- NULL
-  strat_stats$ir_value <- multiplier * strat_stats$n_events / strat_stats$person_years
-
-  # Total weighted person-time per stratum
-  strat_total_pt <- stats::aggregate(
-    df[[py_var]] * df[[wt_var]], by = list(df[[strat_var]]),
-    FUN = function(x) sum(x, na.rm = TRUE)
-  )
-  names(strat_total_pt) <- c(strat_var, "pt_total_stratum")
-  total_pt_all <- sum(strat_total_pt$pt_total_stratum)
-  strat_total_pt$std_weight <- strat_total_pt$pt_total_stratum / total_pt_all
-
-  strat_stats <- merge(strat_stats, strat_total_pt, by = strat_var, all.x = TRUE)
-
-  # Joint sandwich/delta over arm x stratum cells (matrix r5/r9): the whole
-  # weighted standardized analysis shares one robust vcov [P1/P2].
-  std_w <- strat_total_pt$std_weight
-  names(std_w) <- as.character(strat_total_pt[[strat_var]])
-  cell_fit <- fit_weighted_rate_cells(df, exp_var, out_var, py_var, wt_var,
-                                      strat_var = strat_var)
-  ctr <- if (!is.null(cell_fit)) {
-    wtd_std_rate_contrasts(cell_fit, std_w = std_w, z = z, multiplier = multiplier)
-  } else {
-    warning("Weighted standardized IR robust variance fit failed; returning ",
-            "NA CIs. Consider the bootstrap.")
-    NULL
-  }
-
-  # Standardized IR per exposure group: point arithmetic unchanged; SE/CI
-  # from the joint engine (robust log-scale CI).
-  std_ir_by_group <- do.call(rbind, lapply(split(strat_stats, strat_stats[[exp_var]]), function(g) {
-    a <- as.character(g[[exp_var]][1])
-    if (!is.null(ctr)) {
-      sel <- ctr$ir$exp_val == a
-      ir_se  <- ctr$ir$se[sel]
-      ir_lci <- ctr$ir$lci[sel]
-      ir_uci <- ctr$ir$uci[sel]
-    } else {
-      ir_se <- NA_real_; ir_lci <- NA_real_; ir_uci <- NA_real_
-    }
-    data.frame(
-      exp_val      = g[[exp_var]][1],
-      ir_value     = sum(g$ir_value * g$std_weight),
-      IR_SE        = ir_se,
-      ir_lci       = ir_lci,
-      ir_uci       = ir_uci,
-      n_subjects   = sum(g$n_subjects),
-      n_events     = sum(g$n_events),
-      person_years = sum(g$person_years),
-      stringsAsFactors = FALSE
-    )
-  }))
-  names(std_ir_by_group)[1] <- exp_var
-  rownames(std_ir_by_group) <- NULL
-
-  #  Standardized IRD: point unchanged; SE from the joint gradient.
-  ref_ir <- std_ir_by_group$ir_value[std_ir_by_group[[exp_var]] == 0]
-  exp_ir <- std_ir_by_group$ir_value[std_ir_by_group[[exp_var]] == 1]
-
-  ird_value <- exp_ir - ref_ir
-  se_ird <- if (!is.null(ctr)) ctr$ird$se else NA_real_
-  ird_lci_value <- ird_value - z * se_ird
-  ird_uci_value <- ird_value + z * se_ird
-
-  summary_by_group <- std_ir_by_group
-  summary_by_group$ird          <- ird_value
-  summary_by_group$ird_lci      <- ird_lci_value
-  summary_by_group$ird_uci      <- ird_uci_value
-  summary_by_group$IRD_SE <- se_ird
-
-  # Total row (crude weighted): robust intercept-only cell (rounding removed)
-  total_ne <- sum(df[[out_var]] * df[[wt_var]], na.rm = TRUE)
-  total_py <- sum(df[[py_var]] * df[[wt_var]], na.rm = TRUE)
-  total_row <- data.frame(
-    exp_val      = 99,
-    n_subjects   = sum(df[[wt_var]], na.rm = TRUE),
-    n_events     = total_ne,
-    person_years = total_py,
-    stringsAsFactors = FALSE
-  )
-  names(total_row)[1] <- exp_var
-  total_row$ir_value <- multiplier * total_ne / total_py
-
-  df_tot <- df
-  df_tot$.const <- 0L
-  tot_fit <- fit_weighted_rate_cells(df_tot, ".const", out_var, py_var, wt_var)
-  if (!is.null(tot_fit)) {
-    tot_ctr <- wtd_rate_contrasts_total(tot_fit, z, multiplier)
-    total_row$ir_lci <- tot_ctr$lci
-    total_row$ir_uci <- tot_ctr$uci
-    total_row$IR_SE  <- tot_ctr$se
-  } else {
-    total_row$ir_lci <- NA_real_
-    total_row$ir_uci <- NA_real_
-    total_row$IR_SE  <- NA_real_
-  }
-  total_row$ird          <- ird_value
-  total_row$ird_lci      <- ird_lci_value
-  total_row$ird_uci      <- ird_uci_value
-  total_row$IRD_SE <- se_ird
-
-  result <- rbind(summary_by_group, total_row)
-  result <- rename_ir_ird_cols(result, ir_base, suffix)
-
-  strat_stats$exposure_group <- ifelse(
-    strat_stats[[exp_var]] == 1, "Exposed",
-    ifelse(strat_stats[[exp_var]] == 0, "Reference", as.character(strat_stats[[exp_var]]))
-  )
-  names(strat_stats)[names(strat_stats) == "ir_value"] <- ir_base
-  stratum_detail <- strat_stats[, c(strat_var, "exposure_group", "n_subjects", "n_events", "person_years",
-                                    ir_base, "pt_total_stratum", "std_weight"), drop = FALSE]
-
-  return(list(summary = result, stratum_detail = stratum_detail))
 }
 
 
@@ -737,132 +771,6 @@ calc_analytical_se_unstratified <- function(cuminc_data, exp_val, ref_val,
   ))
 }
 
-#' Calculate standardized risk, RR, and RD via direct standardization
-#' @noRd
-calc_standardized_rr_rd <- function(data, time_var, event_var, exp_var, strat_var,
-                                    weight_var = NULL, timepoint, exp_val, ref_val,
-                                    per_n, strat_weights = NULL,
-                                    pre_split = NULL,
-                                    risk_estimator = "KM",
-                                    competing_event_var = NULL) {
-
-  # Get strata
-  strata_levels <- sort(unique(data[[strat_var]]))
-
-  # Calculate stratum weights from data if not provided (original population proportions)
-  if (is.null(strat_weights)) {
-    N_total <- nrow(data)
-    strat_weights <- vapply(strata_levels, function(k) {
-      sum(data[[strat_var]] == k) / N_total
-    }, numeric(1))
-    names(strat_weights) <- as.character(strata_levels)
-  }
-
-  # Use pre-split data if provided, otherwise subset on the fly
-  if (!is.null(pre_split)) {
-    data_by_stratum <- pre_split
-  } else {
-    data_by_stratum <- split(data, data[[strat_var]])
-  }
-
-  # Accumulate stratum details in a list (avoid iterative rbind)
-  strat_rows <- vector("list", length(strata_levels))
-
-  for (j in seq_along(strata_levels)) {
-    k <- strata_levels[j]
-    k_char <- as.character(k)
-    w_k <- strat_weights[k_char]
-
-    # Subset to this stratum
-    data_k <- data_by_stratum[[k_char]]
-    data_k_exp <- data_k[data_k[[exp_var]] == exp_val, , drop = FALSE]
-    data_k_ref <- data_k[data_k[[exp_var]] == ref_val, , drop = FALSE]
-
-    # KM risk for exposed in stratum k
-    km_exp <- calc_km_risk_single_group(
-      data = data_k_exp,
-      time_var = time_var,
-      event_var = event_var,
-      weight_var = weight_var,
-      timepoint = timepoint,
-      risk_estimator = risk_estimator,
-      competing_event_var = competing_event_var
-    )
-
-    # KM risk for reference in stratum k
-    km_ref <- calc_km_risk_single_group(
-      data = data_k_ref,
-      time_var = time_var,
-      event_var = event_var,
-      weight_var = weight_var,
-      timepoint = timepoint,
-      risk_estimator = risk_estimator,
-      competing_event_var = competing_event_var
-    )
-
-    strat_rows[[j]] <- data.frame(
-      stratum = k_char,
-      w_k = w_k,
-      n_total = nrow(data_k),
-      n_exp = nrow(data_k_exp),
-      n_ref = nrow(data_k_ref),
-      events_exp = km_exp$n_events,
-      events_ref = km_ref$n_events,
-      risk_exp = km_exp$risk,
-      risk_ref = km_ref$risk,
-      risk_var_exp = km_exp$risk_var,
-      risk_var_ref = km_ref$risk_var,
-      stringsAsFactors = FALSE
-    )
-  }
-
-  strat_details <- do.call(rbind, strat_rows)
-
-  # Standardized risks: Risk_std = Sum(w_k * R_k)
-  risk_std_exp <- sum(strat_details$w_k * strat_details$risk_exp, na.rm = TRUE)
-  risk_std_ref <- sum(strat_details$w_k * strat_details$risk_ref, na.rm = TRUE)
-
-  # RR and RD from standardized risks
-  RR <- risk_std_exp / risk_std_ref
-  RD <- (risk_std_exp - risk_std_ref) * per_n
-
-  # Analytical SE via Greenwood: Var(Risk_std) = Sum(w_k^2 * Var(R_k))
-  var_risk_std_exp <- sum(strat_details$w_k^2 * strat_details$risk_var_exp, na.rm = TRUE)
-  var_risk_std_ref <- sum(strat_details$w_k^2 * strat_details$risk_var_ref, na.rm = TRUE)
-  se_risk_std_exp <- sqrt(var_risk_std_exp)
-  se_risk_std_ref <- sqrt(var_risk_std_ref)
-
-  # Delta method SE for RR (log scale):
-  # Var(log(RR)) ~ Var(R_exp)/R_exp^2 + Var(R_ref)/R_ref^2
-  if (risk_std_exp > 0 && risk_std_ref > 0) {
-    var_log_RR <- var_risk_std_exp / risk_std_exp^2 + var_risk_std_ref / risk_std_ref^2
-    se_log_RR <- sqrt(var_log_RR)
-    lnRR_se_analytical <- se_log_RR
-  } else {
-    se_log_RR <- NA_real_
-    lnRR_se_analytical <- NA_real_
-  }
-
-  # SE for RD: Var(RD) = Var(R_exp) + Var(R_ref) (scaled by per_n)
-  var_RD <- (var_risk_std_exp + var_risk_std_ref) * per_n^2
-  RD_se_analytical <- sqrt(var_RD)
-
-  return(list(
-    risk_std_exp = risk_std_exp,
-    risk_std_ref = risk_std_ref,
-    RR = RR,
-    RD = RD,
-    lnRR_se_analytical = lnRR_se_analytical,
-    RD_se_analytical = RD_se_analytical,
-    se_log_RR = se_log_RR,
-    se_risk_std_exp = se_risk_std_exp,
-    se_risk_std_ref = se_risk_std_ref,
-    var_risk_std_exp = var_risk_std_exp,
-    var_risk_std_ref = var_risk_std_ref,
-    strat_details = strat_details,
-    strat_weights = strat_weights
-  ))
-}
 
 #' Calculate RR and RD from cumulative incidence data (unstratified)
 #' @noRd
@@ -918,60 +826,6 @@ boot_rr_rd_single <- function(data, time_var, event_var, exp_var,
   })
 }
 
-#' Single bootstrap iteration for stratified (standardized) RR/RD
-#' Resamples within each stratum independently, applies fixed population
-#' weights. match_ids_by_stratum (optional): list parallel to
-#' data_by_stratum with the match-set ids of each stratum's rows; when
-#' supplied, matched sets are resampled together within each stratum
-#' (matched sets are assumed to be nested within strata).
-#' @noRd
-boot_standardized_rr_rd_single <- function(data_by_stratum, strat_var, strat_weights,
-                                           time_var, event_var, exp_var,
-                                           weight_var, timepoint, exp_val, ref_val, per_n,
-                                           risk_estimator = "KM",
-                                           competing_event_var = NULL,
-                                           match_ids_by_stratum = NULL) {
-
-  tryCatch({
-    # Stratified resampling: resample within each stratum independently
-    boot_data_list <- lapply(seq_along(data_by_stratum), function(k) {
-      data_k <- data_by_stratum[[k]]
-      if (is.null(match_ids_by_stratum)) {
-        n_k <- nrow(data_k)
-        boot_idx <- sample.int(n_k, size = n_k, replace = TRUE)
-      } else {
-        boot_idx <- pair_resample_index(match_ids_by_stratum[[k]])
-      }
-      data_k[boot_idx, , drop = FALSE]
-    })
-    boot_data <- do.call(rbind, boot_data_list)
-
-    # Calculate standardized RR/RD using fixed original weights
-    boot_split <- split(boot_data, boot_data[[strat_var]])
-
-    std_result <- calc_standardized_rr_rd(
-      data = boot_data,
-      time_var = time_var,
-      event_var = event_var,
-      exp_var = exp_var,
-      strat_var = strat_var,
-      weight_var = weight_var,
-      timepoint = timepoint,
-      exp_val = exp_val,
-      ref_val = ref_val,
-      per_n = per_n,
-      strat_weights = strat_weights,
-      pre_split = boot_split,
-      risk_estimator = risk_estimator,
-      competing_event_var = competing_event_var
-    )
-
-    return(c(RR = std_result$RR, RD = std_result$RD))
-
-  }, error = function(e) {
-    return(c(RR = NA_real_, RD = NA_real_))
-  })
-}
 
 #' Run parallel bootstrap and return results matrix
 #'
@@ -996,7 +850,6 @@ run_parallel_bootstrap <- function(n_cores, bootstrap_count, boot_fn,
                                    export_varlist = c(
                                      "calc_km_cumulative_incidence",
                                      "calc_km_risk_single_group",
-                                     "calc_standardized_rr_rd",
                                      "calc_rr_rd"
                                    ),
                                    result_colnames = c("RR", "RD"),
@@ -1074,24 +927,42 @@ run_parallel_bootstrap <- function(n_cores, bootstrap_count, boot_fn,
 #'   lnIRR_SE, Pvalue, Model, SE_type.
 #' @noRd
 fit_irr_model <- function(data, outcome_var, exposure_var, py_var = "person_years",
-                          weight_var = NULL,
+                          weight_var = NULL, cluster_var = NULL,
                           confidence_level = 0.95, base_label = "Crude") {
-  is_weighted <- !is.null(weight_var)
+  is_weighted  <- !is.null(weight_var)
+  is_clustered <- !is.null(cluster_var)
   z <- stats::qnorm(1 - (1 - confidence_level) / 2)
 
   fml <- stats::as.formula(
     paste0(outcome_var, " ~ ", exposure_var, " + offset(log(", py_var, "))")
   )
 
-  if (is_weighted) {
-    des <- survey::svydesign(
-      ids = ~1,
-      weights = stats::as.formula(paste0("~", weight_var)),
-      data = data
-    )
+  if (is_weighted || is_clustered) {
+    ids_f <- if (is_clustered) {
+      stats::as.formula(paste0("~`", cluster_var, "`"))
+    } else {
+      ~1
+    }
+    wt_f <- if (is_weighted) {
+      stats::as.formula(paste0("~`", weight_var, "`"))
+    } else {
+      data$.unit_w_ <- 1     # explicit unit weights: silences svydesign's note
+      ~.unit_w_
+    }
+    des <- survey::svydesign(ids = ids_f, weights = wt_f, data = data)
     fit <- survey::svyglm(fml, design = des, family = stats::quasipoisson())
-    se_type     <- "robust (svyglm)"
-    model_label <- "quasipoisson (weighted)"
+    se_type <- if (is_weighted && is_clustered) {
+      "robust (svyglm, weighted + match-id cluster)"
+    } else if (is_weighted) {
+      "robust (svyglm)"
+    } else {
+      "robust (svyglm, match-id cluster)"
+    }
+    model_label <- if (is_weighted) {
+      "quasipoisson (weighted)"
+    } else {
+      "quasipoisson (clustered)"
+    }
   } else {
     fit <- stats::glm(fml, data = data, family = stats::poisson())
     se_type     <- "model (Poisson, r10-A)"
@@ -1116,84 +987,6 @@ fit_irr_model <- function(data, outcome_var, exposure_var, py_var = "person_year
     IRR_UCI    = uci,
     lnIRR      = ln_irr,
     lnIRR_SE   = ln_se,
-    Pvalue     = p_val,
-    Model      = model_label,
-    SE_type    = se_type,
-    stringsAsFactors = FALSE,
-    row.names  = NULL
-  )
-}
-
-
-# IRR Helper (stratified paths) ######################################
-#' Stratified marginal IRR for one block (always-on; matrix r11-A / r13-A).
-#' Unweighted (crude/matched): direct-standardized IRR from per-stratum
-#' Poisson cells via direct_std_irr(). Weighted: joint-sandwich
-#' log-ratio delta via fit_weighted_rate_cells() + wtd_std_rate_contrasts().
-#' Standardization weights = total (weighted) person-time share per stratum,
-#' the same W_s used by the standardized IR/IRD calculators.
-#'
-#' @return One-row data frame with the same columns as fit_irr_model().
-#' @noRd
-fit_irr_model_stratified <- function(data, outcome_var, exposure_var,
-                                     py_var = "person_years", strat_var,
-                                     weight_var = NULL,
-                                     confidence_level = 0.95,
-                                     base_label = "Crude") {
-  z <- stats::qnorm(1 - (1 - confidence_level) / 2)
-  is_weighted <- !is.null(weight_var)
-
-  if (is_weighted) {
-    pt <- data[[py_var]] * data[[weight_var]]
-    pt_s <- vapply(split(pt, data[[strat_var]]), function(x) sum(x, na.rm = TRUE),
-                   numeric(1))
-    std_w <- pt_s / sum(pt_s)
-    cell_fit <- fit_weighted_rate_cells(data, exposure_var, outcome_var,
-                                        py_var, weight_var, strat_var = strat_var)
-    if (is.null(cell_fit)) {
-      irr <- list(est = NA_real_, lci = NA_real_, uci = NA_real_,
-                  ln = NA_real_, ln_se = NA_real_)
-    } else {
-      irr <- wtd_std_rate_contrasts(cell_fit, std_w = std_w, z = z,
-                                    multiplier = 1)$irr
-    }
-    model_label <- "direct-standardized (weighted joint sandwich)"
-    se_type     <- "robust joint sandwich / log-ratio delta"
-  } else {
-    pt_s <- vapply(split(data[[py_var]], data[[strat_var]]),
-                   function(x) sum(x, na.rm = TRUE), numeric(1))
-    std_w <- pt_s / sum(pt_s)
-    lev <- names(std_w)
-    ev <- function(a, s) sum(data[[outcome_var]][data[[exposure_var]] == a &
-                                                   data[[strat_var]] == s], na.rm = TRUE)
-    py <- function(a, s) sum(data[[py_var]][data[[exposure_var]] == a &
-                                              data[[strat_var]] == s], na.rm = TRUE)
-    irr <- direct_std_irr(
-      events1 = vapply(lev, function(s) ev(1, s), numeric(1)),
-      py1     = vapply(lev, function(s) py(1, s), numeric(1)),
-      events0 = vapply(lev, function(s) ev(0, s), numeric(1)),
-      py0     = vapply(lev, function(s) py(0, s), numeric(1)),
-      std_w   = std_w, z = z
-    )
-    model_label <- "direct-standardized (Poisson strata)"
-    se_type     <- "log-ratio delta (per-stratum Poisson)"
-  }
-
-  p_val <- if (is.finite(irr$ln) && is.finite(irr$ln_se) && irr$ln_se > 0) {
-    2 * stats::pnorm(-abs(irr$ln / irr$ln_se))
-  } else {
-    NA_real_
-  }
-
-  data.frame(
-    Analysis   = base_label,
-    IRR_CI     = if (is.na(irr$est)) NA_character_ else
-      sprintf("%.2f (%.2f, %.2f)", irr$est, irr$lci, irr$uci),
-    IRR        = irr$est,
-    IRR_LCI    = irr$lci,
-    IRR_UCI    = irr$uci,
-    lnIRR      = irr$ln,
-    lnIRR_SE   = irr$ln_se,
     Pvalue     = p_val,
     Model      = model_label,
     SE_type    = se_type,

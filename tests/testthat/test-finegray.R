@@ -1,5 +1,5 @@
 # Fine-Gray subdistribution-hazard regression (SHR), now via
-# estimate_hr_ir(hr_model = "Fine-Gray") after the v0.4.0 move-in.
+# estimate_hr(hr_model = "Fine-Gray") after the v0.4.0 move-in.
 # finegray(weights = psweight) -> fgwt already = IPCW x PS weight; the Cox
 # fit uses weights = fgwt with a robust SE clustered on the original subject
 # (crude/weighted) or on the match id (matched block).
@@ -11,7 +11,7 @@
 }
 
 test_that("crude Fine-Gray SHR matches a direct finegray + coxph fit", {
-  res <- estimate_hr_ir(
+  res <- estimate_hr(
     in_df_crude = small_df, exposure_var = "exposure",
     outcome_var = "outcome", followuptime_var = "follow_up_days",
     hr_model = "Fine-Gray", if_fg_competing_event_var = "competing_event",
@@ -47,7 +47,7 @@ test_that("weighted Fine-Gray multiplies PS weight into fgwt exactly once", {
     weight_var = "mw_wt", verbose = FALSE
   )
 
-  res <- estimate_hr_ir(
+  res <- estimate_hr(
     in_df_weight = wt_df, if_weight_weight_var = "mw_wt",
     exposure_var = "exposure", outcome_var = "outcome",
     followuptime_var = "follow_up_days",
@@ -72,11 +72,9 @@ test_that("weighted Fine-Gray multiplies PS weight into fgwt exactly once", {
 })
 
 test_that("matched Fine-Gray clusters the robust SE on the match id", {
-  set.seed(4)
-  md <- small_df[sample.int(nrow(small_df), 300), ]
-  md$pair_id <- rep(seq_len(150), each = 2)
+  md <- make_test_matched_pairs(150, seed = 4)
 
-  res <- estimate_hr_ir(
+  res <- estimate_hr(
     in_df_match = md, if_match_match_id = "pair_id",
     exposure_var = "exposure", outcome_var = "outcome",
     followuptime_var = "follow_up_days",
@@ -106,7 +104,7 @@ test_that("Fine-Gray rejects rows that are both event and competing event", {
   bad <- small_df
   bad$competing_event[which(bad$outcome == 1)[1]] <- 1   # one ambiguous row
   expect_error(
-    estimate_hr_ir(
+    estimate_hr(
       in_df_crude = bad, exposure_var = "exposure",
       outcome_var = "outcome", followuptime_var = "follow_up_days",
       hr_model = "Fine-Gray", if_fg_competing_event_var = "competing_event",

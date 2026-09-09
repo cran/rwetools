@@ -78,6 +78,12 @@ This function calculates propensity scores using logistic regression and adds th
 as a new column to the dataset. It can output both an R data frame and/or CSV file.
 Additionally, it can save odds ratio table from the PS model to Excel or data frame.
 }
+\details{
+The default exposure column here is \code{"exposure"}, whereas downstream
+weighting, matching, and effect functions default to \code{"exp"}. This
+difference is retained for compatibility; pass \code{exposure_var} explicitly
+throughout a pipeline when the source column uses another name.
+}
 \section{Side Effects}{
 
 \itemize{

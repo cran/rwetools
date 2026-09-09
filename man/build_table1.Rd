@@ -2,7 +2,7 @@
 % Please edit documentation in R/build_table1.R
 \name{build_table1}
 \alias{build_table1}
-\title{Build a Table 1 comparing baseline characteristics between groups}
+\title{Build an Unweighted or Weighted Baseline-Characteristics Table}
 \usage{
 build_table1(
   in_df,
@@ -42,116 +42,130 @@ build_table1(
 \arguments{
 \item{in_df}{Data frame containing the analytic cohort.}
 
-\item{out_xlsxpath}{Character string. File path for Excel output, or
-\code{NULL} to skip (default \code{NULL}).}
+\item{out_xlsxpath}{Character path for Excel output, or \code{NULL} to skip file
+output.}
 
-\item{exposure_var}{Character string. Name of the binary exposure column.}
+\item{exposure_var}{Character name of the exposure column.}
 
-\item{exp_value}{Value in \code{exposure_var} representing the exposed group
-(default 1).}
+\item{exp_value, ref_value}{Values identifying the exposed and reference
+groups. Non-missing values outside these two groups are rejected; missing
+exposure values are reported and excluded from arm-specific calculations.}
 
-\item{ref_value}{Value in \code{exposure_var} representing the reference group
-(default 0).}
+\item{use_weights}{Logical; use \code{weight_var} for weighted summaries.}
 
-\item{use_weights}{Logical. Apply weights? (default FALSE).}
+\item{weight_var}{Character name of the weight column. The default is
+\code{"psweight"}.}
 
-\item{weight_var}{Character string. Name of the weight column (default
-\code{"psweight"}).}
+\item{cont_vars}{Character vector of continuous-variable names.}
 
-\item{cont_vars}{Character vector of continuous variable names.}
+\item{cat_vars}{Character vector of categorical-variable names, or a named
+list whose elements give the levels to display for each variable.}
 
-\item{cat_vars}{Character vector or named list of categorical variable names.
-If a named list, each element should be a character vector of factor levels.}
+\item{binary_vars}{Character vector of binary-variable names.}
 
-\item{binary_vars}{Character vector of binary variable names.}
+\item{drop_vars}{Character vector of variables to remove from the requested
+continuous, binary, and categorical sets.}
 
-\item{drop_vars}{Character vector of variable names to exclude.}
+\item{drop_varpattern}{Character vector of regular-expression patterns;
+matching requested variables are removed.}
 
-\item{drop_varpattern}{Character vector of regex patterns; matching variables
-are excluded.}
+\item{Var_colname, Vartype_colname, Total_colname, Exp_colname, Ref_colname}{Output names for the variable, type, total, exposed, and reference columns.}
 
-\item{Var_colname, Vartype_colname, Total_colname, Exp_colname, Ref_colname}{Column-name overrides for the output table.}
+\item{CrudeDiff_colname, StdDiff_colname}{Output names for the crude- and
+standardized-difference columns.}
 
-\item{CrudeDiff_colname, StdDiff_colname}{Column-name overrides for
-difference columns.}
+\item{MissingTotal_colname, MissingExp_colname, MissingRef_colname}{Output
+names for missing-count and missing-percent columns.}
 
-\item{MissingTotal_colname, MissingExp_colname, MissingRef_colname}{Column-name overrides for missingness columns.}
+\item{ExistingTotal_colname, ExistingExp_colname, ExistingRef_colname}{Output
+names for non-missing-count columns. Set a name to \code{NULL} to omit that
+column; exposed and reference columns are omitted by default.}
 
-\item{ExistingTotal_colname, ExistingExp_colname, ExistingRef_colname}{Column-name overrides for non-missing-count columns. Set to \code{NULL}
-to omit (default for Exp/Ref).}
+\item{mean_decimal, sd_decimal}{Numbers of decimal places for means and SDs.}
 
-\item{mean_decimal, sd_decimal}{Integer. Decimal places for mean and SD.}
+\item{n_decimal}{Number of decimal places for counts or weighted totals.}
 
-\item{n_decimal}{Integer. Decimal places for counts (default 0).}
+\item{pct_decimal}{Number of decimal places for percentages.}
 
-\item{pct_decimal}{Integer. Decimal places for percentages (default 1).}
+\item{use_absolute_values_for_diff}{Logical; report absolute rather than
+signed crude differences and SMDs.}
 
-\item{use_absolute_values_for_diff}{Logical. Show absolute differences?
-(default FALSE).}
+\item{add_n_of_patients_row}{Logical; prepend an \code{n_of_patients} row.}
 
-\item{add_n_of_patients_row}{Logical. Prepend an \code{"n_of_patients"} row?
-(default TRUE).}
-
-\item{verbose}{Logical. Print progress messages (default TRUE).}
+\item{verbose}{Logical; print progress and validation messages.}
 }
 \value{
-Invisibly returns the Table 1 data frame.
+Invisibly returns the formatted Table 1 data frame.
 }
 \description{
-Generates a descriptive Table 1 with counts, percentages, means, SDs,
-crude differences, standardized mean differences (SMD), and missingness.
-Supports inverse probability weighting via a user-supplied weight column
-and optionally saves the output to an Excel file.
+Summarizes continuous, binary, and categorical characteristics for the
+total cohort and two exposure arms. The output includes formatted counts or
+means, exposed-minus-reference crude differences, standardized mean
+differences (SMD), and missingness. SMDs are reported on the raw scale; for
+example, 0.1 rather than 10 percent.
 }
-\section{Side Effects}{
+\section{Weighted analysis}{
 
-When \code{out_xlsxpath} is not \code{NULL}, creates the output directory
-(if needed) and writes an Excel workbook.
+Setting \code{use_weights = TRUE} is an explicit contract. \code{weight_var} must name
+an existing numeric column whose values are finite, non-missing, and
+non-negative. Numeric-looking character values are rejected rather than
+coerced. Zero-weight rows are reported and removed before the survey design
+and every table statistic are created; an error is raised if no
+positive-weight rows or no positive-weight rows in one exposure arm remain.
+A missing weight column is an error, not a silent unweighted fallback.
+
+Weighted continuous summaries use survey-weighted means and variances.
+Weighted categorical and binary summaries use weighted cell totals and
+proportions. The \code{n_of_patients} row reports sums of weights when weighting
+is enabled.
+}
+
+\section{Meaning of missing and existing counts}{
+
+In weighted mode, the \verb{Missing_*} columns and variable-row \verb{Existing_*}
+columns remain unweighted row counts (after zero-weight rows have been
+removed). They describe data availability, not weighted population size.
+The exception is the \code{n_of_patients} row: its Total/Exp/Ref values and its
+\verb{Existing_*} values are sums of weights. Consequently, an
+\code{Existing_Total_N_denom} column mixes an effective weighted total in the
+\code{n_of_patients} row with unweighted non-missing row counts in variable rows.
+}
+
+\section{Side effects}{
+
+With \code{out_xlsxpath}, creates its parent directory if needed and writes an
+Excel workbook.
 }
 
 \examples{
-csv_path <- system.file("extdata", "sample_data.csv", package = "rwetools")
-df <- read.csv(csv_path)
-
-# Unweighted Table 1
+df <- read.csv(system.file("extdata", "sample_data.csv",
+                           package = "rwetools"))
 tbl <- build_table1(
-  in_df        = df,
-  exposure_var = "exposure",
-  cont_vars    = c("cont1", "cont2", "cont3"),
-  binary_vars  = c("binary1", "binary2"),
-  cat_vars     = c("cat1", "cat2"),
-  verbose      = FALSE
+  in_df = df, exposure_var = "exposure",
+  cont_vars = c("cont1", "cont2", "cont3"),
+  binary_vars = c("binary1", "binary2"),
+  cat_vars = c("cat1", "cat2"), verbose = FALSE
 )
 head(tbl)
 
 \donttest{
-# Weighted Table 1 with Excel output (requires openxlsx)
+# Weighted Table 1 with Excel output
 if (requireNamespace("openxlsx", quietly = TRUE)) {
   df_ps <- estimate_ps(
-    in_df        = df,
-    exposure_var = "exposure",
-    class_vars   = c("cat1", "cat2", "cat3", "cat4"),
-    cont_vars    = c("cont1", "cont2", "cont3"),
-    verbose      = FALSE
+    in_df = df, exposure_var = "exposure",
+    class_vars = c("cat1", "cat2", "cat3", "cat4"),
+    cont_vars = c("cont1", "cont2", "cont3"), verbose = FALSE
   )
   df_wt <- create_matching_weights(
-    in_df         = df_ps,
-    exposure_var  = "exposure",
-    ps_var        = "ps",
-    weight_var    = "mw_wt",
-    verbose       = FALSE
+    in_df = df_ps, exposure_var = "exposure", ps_var = "ps",
+    weight_var = "mw_wt", verbose = FALSE
   )
-  out_xlsx <- tempfile(fileext = ".xlsx")
   tbl_wt <- build_table1(
-    in_df        = df_wt,
-    out_xlsxpath = out_xlsx,
-    exposure_var = "exposure",
-    use_weights  = TRUE,
-    weight_var   = "mw_wt",
-    cont_vars    = c("cont1", "cont2", "cont3"),
-    binary_vars  = c("binary1", "binary2"),
-    cat_vars     = c("cat1", "cat2"),
-    verbose      = FALSE
+    in_df = df_wt, out_xlsxpath = tempfile(fileext = ".xlsx"),
+    exposure_var = "exposure", use_weights = TRUE,
+    weight_var = "mw_wt", cont_vars = c("cont1", "cont2", "cont3"),
+    binary_vars = c("binary1", "binary2"), cat_vars = c("cat1", "cat2"),
+    verbose = FALSE
   )
 }
 }

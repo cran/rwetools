@@ -5,6 +5,11 @@
 #' as a new column to the dataset. It can output both an R data frame and/or CSV file.
 #' Additionally, it can save odds ratio table from the PS model to Excel or data frame.
 #'
+#' The default exposure column here is `"exposure"`, whereas downstream
+#' weighting, matching, and effect functions default to `"exp"`. This
+#' difference is retained for compatibility; pass `exposure_var` explicitly
+#' throughout a pipeline when the source column uses another name.
+#'
 #' @param in_df Data frame containing the input data (optional if in_csvpath provided)
 #' @param in_csvpath Character string. Path to input CSV file (optional if in_df provided)
 #' @param out_csvpath Character string. Path for output CSV file (optional, if NULL no CSV is saved)
@@ -146,6 +151,7 @@ estimate_ps <- function(
   
   # Make a copy of the data
   data_work <- in_df
+  original_exposure <- data_work[[exposure_var]]
   
   # *** Step 0: Check for extreme distribution variables ***
   if (verbose) message("Step 0: Checking variables for extreme distribution")
@@ -290,39 +296,23 @@ estimate_ps <- function(
   
   if (verbose) message("")
   
-  # Step 1: Recode exposure variable to 0/1 if needed          ######################  
+  # Step 1: Canonicalize exposure for internal modelling only.  The original
+  # labels are restored before the data are saved or returned.
   unique_exposure_vals <- unique(data_work[[exposure_var]])
-  
-  if (!(all(unique_exposure_vals %in% c(0, 1)))) {
-    if (verbose) message("Step 1: Recoding exposure variable")
-    if (verbose) message("----------------------------------------")
-    if (verbose) message(sprintf("Original exposure values: %s", paste(unique_exposure_vals, collapse = ", ")))
-    if (verbose) message(sprintf("Recoding: %s (exposed) -> 1, %s (reference) -> 0", exp_value, ref_value))
-    
-    # Check if exp_value and ref_value exist
-    if (!(exp_value %in% unique_exposure_vals)) {
-      stop(paste("exp_value", exp_value, "not found in", exposure_var))
-    }
-    if (!(ref_value %in% unique_exposure_vals)) {
-      stop(paste("ref_value", ref_value, "not found in", exposure_var))
-    }
-    
-    # Recode
-    data_work[[exposure_var]] <- ifelse(data_work[[exposure_var]] == exp_value, 1,
-                                        ifelse(data_work[[exposure_var]] == ref_value, 0, NA))
-    
-    # Check for NAs created
-    n_na <- sum(is.na(data_work[[exposure_var]]))
-    if (n_na > 0) {
-      warning(paste(n_na, "observations had values other than exp_value or ref_value and were set to NA"))
-    }
-    
-    # Show recoded distribution
-    recoded_table <- table(data_work[[exposure_var]], useNA = "ifany")
-    if (verbose) message("\nRecoded exposure distribution:")
-    if (verbose) print(recoded_table)
-    if (verbose) message("")
-  }
+  if (verbose) message("Step 1: Canonicalizing exposure variable")
+  if (verbose) message("----------------------------------------")
+  if (verbose) message(sprintf("Original exposure values: %s", paste(unique_exposure_vals, collapse = ", ")))
+  if (verbose) message(sprintf("Internal coding: %s (exposed) -> 1, %s (reference) -> 0", exp_value, ref_value))
+
+  exposure_01 <- .canonicalize_exposure(
+    data_work[[exposure_var]], exp_value, ref_value,
+    exposure_var = exposure_var, require_both = TRUE, warn_unmatched = TRUE
+  )
+  data_work[[exposure_var]] <- exposure_01$value
+
+  if (verbose) message("\nInternal exposure distribution:")
+  if (verbose) print(table(data_work[[exposure_var]], useNA = "ifany"))
+  if (verbose) message("")
   
   # Step 2: Build PS model formula
   if (verbose) message("Step 2: Building propensity score model")
@@ -618,10 +608,13 @@ estimate_ps <- function(
     if (verbose) message(sprintf("  OR table saved to Excel: %s", out_xlsxpath_odds_ratio))
   }
   
-  # Step 4: Save outputs          
+  # Step 4: Save outputs
   if (verbose) message("\nStep 4: Saving outputs")
   if (verbose) message("----------------------------------------")
   
+  # Preserve the caller's exposure labels in every public data output.
+  data_work[[exposure_var]] <- original_exposure
+
   # Save to CSV if path specified
   if (!is.null(out_csvpath)) {
     utils::write.csv(data_work, file = out_csvpath, row.names = FALSE)

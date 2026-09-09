@@ -1,4 +1,7 @@
 # make_v030_fixtures.R -----------------------------------------------------
+# Historical fixture-generation script written against the rwetools 0.3.0
+# API. It is retained as provenance and is not sourced or run by the test suite.
+#
 # Step 0d: capture v0.3.0 numeric outputs (branch point of feature/v040-api-
 # redesign, commit 1151194, tag v0.3.0) as .rds fixtures for the v0.4.0
 # equivalence regression (EFFECT_CI_V2_PLAN.md Step 0 / Step 10).

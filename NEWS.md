@@ -1,3 +1,79 @@
+# rwetools 0.5.0
+
+This is a BREAKING redesign of the effect-estimation API. Direct
+standardization has been removed, the two former effect functions have been
+split into three single-purpose functions, and no deprecated compatibility
+wrappers are provided. Propensity-score weighting estimands are unchanged.
+
+## Breaking effect API
+
+* `estimate_hr_ir()` has been replaced by `estimate_hr()` and `estimate_ir()`.
+  Hazard and rate results now have separate calls, return objects, and optional
+  workbooks.
+* `estimate_rr_rd()` has been renamed to `estimate_risk()` and
+  `rr_rd_at_timepoint` to `risk_at_timepoint`.
+* Direct standardization and its output have been removed from
+  `estimate_ir()` and `estimate_risk()`. The old `stratification_var` argument
+  is now `strata_var` in `estimate_hr()` only, where it adds
+  `survival::strata()` terms and estimates a conditional common hazard or
+  subdistribution-hazard ratio. It is not a replacement for a marginal
+  standardized estimate.
+* `time_unit` has been removed from `estimate_hr()` because proportional-hazard
+  models are invariant to a common rescaling of follow-up time. It remains in
+  `estimate_ir()` and `estimate_risk()`.
+* The `Stratified_By` output column and all standardized rate/risk output have
+  been removed. Scripts reading effect workbooks must be updated accordingly.
+* `estimate_hr_ir()` and `estimate_rr_rd()` are absent rather than deprecated.
+
+To migrate a 0.4.0 call, split HR from rate estimation, rename the risk
+function/timepoint argument, and decide explicitly whether a former hazard
+stratifier should remain as `strata_var`. For marginal rates and risks, either
+include the covariate in the propensity-score design or run and combine
+stratum-specific analyses explicitly in caller code. Users upgrading directly
+from CRAN 0.2.0 must also apply the 0.3.0 and 0.4.0 breaking changes below.
+
+## Correctness and inference fixes
+
+* `exp_value` and `ref_value` are now honored consistently throughout the PS,
+  weighting, matching, and effect pipeline. In 0.4.0, passing
+  `exp_value = 0, ref_value = 1` to HR/IR could silently leave the original arm
+  direction in place; estimates from such calls may therefore invert after
+  upgrade. The two values must differ, rows matching neither value are dropped
+  with a counted warning, and an empty analysis arm is an error. Public data
+  outputs retain the caller's original exposure labels.
+* Matched-block IR, IRD, and IRR analytical standard errors are now
+  cluster-robust on `if_match_match_id`. Depending on within-pair covariance,
+  the corrected interval may be narrower or wider; point estimates are
+  unchanged.
+* The weighted/matched Total-row IR confidence interval and standard error,
+  which were silently `NA`, now use a valid robust intercept fit.
+* The matched effect block now enforces its supported design: all
+  `.match_weights` must equal 1, and a supplied match id must contain exactly
+  one exposed and one reference row. Variable/incomplete 1:k, subclass, and
+  with-replacement designs must use the documented weighted route and its
+  stated inference limitations.
+* A match id that assigns a row to multiple sets is rejected. A hazard
+  `strata_var` level lacking either exposure arm is also rejected.
+* Aalen-Johansen risk estimation now rejects a row marked simultaneously as
+  the event of interest and a competing event, matching the Fine-Gray guard.
+* Fine-Gray complete-case preparation no longer narrows the incidence-rate
+  table produced by the separate `estimate_ir()` call.
+
+## Weighting, matching, and Table 1
+
+* Exposure handling is centralized across `estimate_ps()`, the three
+  PS-weight functions, fine stratification, and cohort matching; original
+  labels are restored in returned data.
+* Weighted `build_table1()` now requires an existing numeric, finite,
+  non-missing, non-negative weight column. Zero-weight rows are reported and
+  removed before constructing a survey design, avoiding infinite sampling
+  probabilities while leaving weighted statistics unchanged.
+* `create_ps_matched_cohort()` now applies `.match_weights` in its built-in
+  matched Table 1 whenever they are non-unit, including subclass and
+  variable/incomplete nearest 1:k output.
+* Manual pages for the ten exported functions have been regenerated for the
+  new API and its inference contracts.
+
 # rwetools 0.4.0
 
 Complete redesign of the two effect-estimation functions,

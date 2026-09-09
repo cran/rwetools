@@ -2,8 +2,7 @@
 % Please edit documentation in R/create_psweights.R
 \name{create_ps_fs_weights}
 \alias{create_ps_fs_weights}
-\title{Calculate PS Fine Stratification Weights, Trim Non-overlapping Regions,
-and Generate Diagnostics}
+\title{Create Propensity-Score Fine-Stratification Weights}
 \usage{
 create_ps_fs_weights(
   in_df,
@@ -29,82 +28,110 @@ create_ps_fs_weights(
 )
 }
 \arguments{
-\item{in_df}{Data frame with PS already calculated (the "crude" / untrimmed data)}
+\item{in_df}{Data frame containing exposure and an estimated propensity
+score.}
 
-\item{out_csvpath}{Character. Path for output CSV of trimmed+weighted data (optional)}
+\item{out_csvpath}{Character path for the weighted cohort CSV, or \code{NULL}.}
 
-\item{out_xlsxpath_report}{Character. Path for Excel diagnostic report (optional)}
+\item{out_xlsxpath_report}{Character path for an Excel diagnostic report,
+or \code{NULL}.}
 
-\item{out_dir_plots}{Character. Directory to save diagnostic plots (NULL = skip plots)}
+\item{out_dir_plots}{Character directory for diagnostic PNG files, or
+\code{NULL}.}
 
-\item{trim_nonoverlap_region}{Logical. Trim non-overlapping PS regions (default TRUE)}
+\item{trim_nonoverlap_region}{Logical; restrict to the intersection of the
+two arm-specific PS ranges before creating strata.}
 
-\item{exposure_var}{Character. Name of binary exposure variable (default "exp")}
+\item{exposure_var}{Character name of the exposure column. The default is
+\code{"exp"}.}
 
-\item{exp_value}{Value representing exposed group (default 1)}
+\item{exp_value, ref_value}{Values identifying the exposed and reference
+arms.}
 
-\item{ref_value}{Value representing reference group (default 0)}
+\item{ps_var}{Character name of the propensity-score column. Required.}
 
-\item{ps_var}{Character. Name of PS variable in the data (required)}
+\item{weight_var}{Character name for the created weight column. The default
+is \code{"ps_fs_wt"}.}
 
-\item{weight_var}{Character. Name for the stratification weight variable (default "ps_fs_wt")}
+\item{number_of_strata}{Positive number of fine strata. The default is 50.}
 
-\item{number_of_strata}{Integer. Number of strata to create (default 50)}
+\item{stratification_method}{\code{"exposure"} or \code{"cohort"}; see the
+description.}
 
-\item{stratification_method}{Character. "exposure" or "cohort" (default "exposure")}
+\item{estimand}{\code{"ATT"} or \code{"ATE"}.}
 
-\item{estimand}{Character. "ATT" or "ATE" (default "ATT")}
+\item{make_unwt_wt_table1}{Logical; include crude and weighted balance
+tables in the diagnostic report.}
 
-\item{make_unwt_wt_table1}{Logical. Build crude vs weighted balance table (default FALSE)}
+\item{table1_cont_vars, table1_binary_vars}{Character vectors of continuous
+and binary variables for Table 1. When all Table 1 variable arguments are
+\code{NULL}, variable types are detected automatically.}
 
-\item{table1_cont_vars}{Character vector. Continuous vars for Table 1 (auto-detected if NULL)}
+\item{table1_cat_vars}{Character vector, or named level list, for
+categorical variables in Table 1.}
 
-\item{table1_binary_vars}{Character vector. Binary vars for Table 1 (auto-detected if NULL)}
+\item{std_diff_threshold}{Absolute SMD threshold used in diagnostics. The
+default is 0.1 on the raw SMD scale.}
 
-\item{table1_cat_vars}{Character vector. Categorical vars for Table 1 (auto-detected if NULL)}
+\item{readme_text}{Optional text for the report's README worksheet.}
 
-\item{std_diff_threshold}{Numeric. Threshold for acceptable standardised difference (default 0.1)}
-
-\item{readme_text}{Character. Optional message for README sheet in Excel report}
-
-\item{verbose}{Logical. Print progress messages (default TRUE).}
+\item{verbose}{Logical; print progress and diagnostic messages.}
 }
 \value{
-Invisibly returns the trimmed+weighted data frame.
+Invisibly returns the retained, weighted data frame with \code{strata}
+and \code{weight_var} columns.
 }
 \description{
-Combined function that (1) creates PS fine strata, (2) calculates stratification
-weights, (3) trims non-overlapping PS regions, and optionally (4) builds a
-crude vs weighted balance table (Table 1) and (5) generates diagnostic plots.
+Divides the propensity-score distribution into fine strata and assigns
+ATT or ATE weights from the exposed/reference composition of each retained
+stratum. It can first restrict the cohort to common propensity-score support
+and can produce balance tables, plots, and an Excel diagnostic report.
 }
-\section{Side Effects}{
+\details{
+\code{stratification_method = "exposure"} forms cut points from the exposed arm;
+\code{"cohort"} forms them from the full cohort. Strata without both arms are
+excluded before weights are assigned. The output keeps the caller's original
+exposure labels and row alignment, and adds \code{strata} plus the requested
+\code{weight_var}.
+}
+\section{Exposure coding}{
 
-\itemize{
-\item Writes a CSV file when \code{out_csvpath} is provided.
-\item Creates directories, writes an Excel diagnostic report, and saves
-PNG plot files when the corresponding path arguments are supplied.
+\code{exp_value} and \code{ref_value} are always recoded internally to 1 and 0 for
+trimming, strata construction, weights, and diagnostics. They must be
+distinct scalar, non-missing values and both must occur. Rows matching
+neither value are reported and removed. The returned exposure column is
+restored to its original labels. For a logical exposure, use \code{TRUE} and
+\code{FALSE} rather than numeric 1 and 0.
 }
+
+\section{Using the result in a hazard model}{
+
+The \code{strata} column records the PS fine stratum used to construct the
+weights. Do not automatically pass this column as \code{strata_var} to
+\code{\link[=estimate_hr]{estimate_hr()}}. Fine-stratification weighting and
+\code{survival::strata()} are distinct adjustments; combining them changes the
+fitted hazard model and should be an explicit design decision.
+}
+
+\section{Side effects}{
+
+Writes a CSV, Excel workbook, or diagnostic PNG files when the corresponding
+output arguments are supplied, creating parent directories as needed.
 }
 
 \examples{
-csv_path <- system.file("extdata", "sample_data.csv", package = "rwetools")
+df <- read.csv(system.file("extdata", "sample_data.csv",
+                           package = "rwetools"))
 df_ps <- estimate_ps(
-  in_df        = read.csv(csv_path),
-  exposure_var = "exposure",
-  class_vars   = c("cat1", "cat2", "cat3", "cat4"),
-  cont_vars    = c("cont1", "cont2", "cont3"),
-  verbose      = FALSE
+  in_df = df, exposure_var = "exposure",
+  class_vars = c("cat1", "cat2", "cat3", "cat4"),
+  cont_vars = c("cont1", "cont2", "cont3"), verbose = FALSE
 )
-
 result <- create_ps_fs_weights(
-  in_df                 = df_ps,
-  exposure_var          = "exposure",
-  ps_var                = "ps",
-  weight_var            = "fs_wt",
-  number_of_strata      = 10,
-  stratification_method = "exposure",
-  estimand              = "ATT",
-  verbose               = FALSE
+  in_df = df_ps, exposure_var = "exposure", ps_var = "ps",
+  weight_var = "fs_wt", number_of_strata = 10,
+  stratification_method = "exposure", estimand = "ATT",
+  verbose = FALSE
 )
 summary(result$fs_wt)
 }

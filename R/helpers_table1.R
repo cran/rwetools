@@ -8,6 +8,7 @@
 #' @param use_abs Logical. If TRUE, format the absolute value (default FALSE).
 #' @return Character string, or "NA" when \code{x} is \code{NA}.
 #' @keywords internal
+#' @noRd
 fmt_num <- function(x, digits = 3, use_abs = FALSE) {
   if (is.na(x)) return("NA")
   if (use_abs) x <- abs(x)
@@ -23,6 +24,7 @@ fmt_num <- function(x, digits = 3, use_abs = FALSE) {
 #' @param use_abs Logical. If TRUE, use absolute values (default FALSE).
 #' @return Character string in the form "mean (sd)", or "NA" when \code{m} is \code{NA}.
 #' @keywords internal
+#' @noRd
 fmt_mean_sd <- function(m, s, mean_digits = 2, sd_digits = 2, use_abs = FALSE) {
   if (is.na(m)) return("NA")
   if (use_abs) {
@@ -43,6 +45,7 @@ fmt_mean_sd <- function(m, s, mean_digits = 2, sd_digits = 2, use_abs = FALSE) {
 #' @return Character string in the form "n (pct%)", or "NA" when inputs are
 #'   missing or \code{d == 0}.
 #' @keywords internal
+#' @noRd
 fmt_n_pct <- function(n, d, n_digits = 0, pct_digits = 1, use_abs = FALSE) {
   if (is.na(n) | is.na(d) | d == 0) return("NA")
   if (use_abs) {
@@ -62,6 +65,7 @@ fmt_n_pct <- function(n, d, n_digits = 0, pct_digits = 1, use_abs = FALSE) {
 #' @return Character string in the form "xx.x%", or "--" when \code{p}
 #'   is \code{NA}.
 #' @keywords internal
+#' @noRd
 fmt_pct <- function(p, digits = 1, use_abs = FALSE) {
   if (is.na(p)) return("--")
   if (use_abs) p <- abs(p)
@@ -77,6 +81,7 @@ fmt_pct <- function(p, digits = 1, use_abs = FALSE) {
 #' @param x A vector (logical, numeric, integer, character, or factor).
 #' @return A factor with canonical levels.
 #' @keywords internal
+#' @noRd
 canonize_levels <- function(x) {
   if (is.logical(x)) {
     f <- factor(ifelse(is.na(x), NA, ifelse(x, "1", "0")), levels = c("0","1"))
@@ -96,6 +101,7 @@ canonize_levels <- function(x) {
 #' @param f A factor.
 #' @return Character vector of non-baseline levels.
 #' @keywords internal
+#' @noRd
 levels_excl_zero <- function(f) {
   stopifnot(is.factor(f))
   base_like <- c("0","No","no","None","none","FALSE","False")
@@ -119,6 +125,7 @@ levels_excl_zero <- function(f) {
 #'     \item{cont_vars}{Sorted character vector of continuous variable names.}
 #'   }
 #' @keywords internal
+#' @noRd
 get_var_types <- function(df_list, max_cat_levels = 12) {
   
   # Ensure list input
@@ -135,9 +142,9 @@ get_var_types <- function(df_list, max_cat_levels = 12) {
   cont_vars <- character()      # just variable names
   binary_vars <- character()      # just variable names
   
-  #' ----------------------------- #
+  # ----------------------------- #
   # PASS 1: Pattern-based rules           
-  #' ----------------------------- #
+  # ----------------------------- #
   for (var in unique_vars) {
     if (!(var %in% unique_vars_work)) next
     
@@ -186,9 +193,9 @@ get_var_types <- function(df_list, max_cat_levels = 12) {
     }
   }
   
-  #' ----------------------------- #
+  # ----------------------------- #
   # PASS 2: Continuous early-stop          
-  #' ----------------------------- #
+  # ----------------------------- #
   
   seen_values <- vector("list", length(unique_vars_work))
   names(seen_values) <- unique_vars_work
@@ -210,9 +217,9 @@ get_var_types <- function(df_list, max_cat_levels = 12) {
     }
   }
   
-  #' ----------------------------- #
+  # ----------------------------- #
   # PASS 3: Remaining vars -> binary or categorical            
-  #' ----------------------------- #
+  # ----------------------------- #
   for (var in unique_vars_work) {
     
     # reuse value in pass 2 if it exists
@@ -246,9 +253,9 @@ get_var_types <- function(df_list, max_cat_levels = 12) {
     }
   }
   
-  #' ----------------------------- #
+  # ----------------------------- #
   # PASS 4 (optional): fill categorical levels           
-  #' ----------------------------- #
+  # ----------------------------- #
   for (var in names(cat_vars_w_levels)) {
     levels_all <- c()
     for (df in df_list) {
@@ -264,9 +271,9 @@ get_var_types <- function(df_list, max_cat_levels = 12) {
     cat_vars_w_levels[[var]] <- sort(unique(levels_all))
   }
   
-  #' ----------------------------- #
+  # ----------------------------- #
   # Final output          
-  #' ----------------------------- #
+  # ----------------------------- #
   list(
     cat_vars = sort(unique(cat_vars)),
     cat_vars_w_levels = cat_vars_w_levels,
@@ -284,6 +291,7 @@ get_var_types <- function(df_list, max_cat_levels = 12) {
 #' @param ... Named lists to combine.
 #' @return A single named list with unique, combined values per key.
 #' @keywords internal
+#' @noRd
 combine_named_list <- function(...) {
   lsts <- list(...)
   all_names <- unique(unlist(lapply(lsts, names)))
@@ -304,6 +312,7 @@ combine_named_list <- function(...) {
 #'   \code{sum_w}. Returns \code{c(mean = NA, sd = NA, sum_w = 0)} when all
 #'   values are \code{NA}.
 #' @keywords internal
+#' @noRd
 get_weighted_stats <- function(des, var_name) {
   var_formula <- stats::as.formula(paste0("~", var_name))
   x <- des$variables[[var_name]]
@@ -325,6 +334,7 @@ get_weighted_stats <- function(des, var_name) {
 #' @return Numeric scalar: the weighted proportion, 0 if the level is absent,
 #'   or \code{NA_real_} on error.
 #' @keywords internal
+#' @noRd
 get_weighted_prop <- function(design, var, level) {
   tryCatch({
     tab <- survey::svytable(stats::as.formula(paste0("~", var)), design)
@@ -370,6 +380,7 @@ get_weighted_prop <- function(design, var, level) {
 #' @return A matrix of list rows (one per level), or \code{NULL} if the
 #'   variable is not in \code{dat} or has no displayable levels.
 #' @keywords internal
+#' @noRd
 process_catbin_direct <- function(v, dat, levels_to_show = c("all", "non_zero"), 
                                   predefined_levels = NULL,
                                   N_all, N_ref, N_tx,
@@ -457,11 +468,11 @@ process_catbin_direct <- function(v, dat, levels_to_show = c("all", "non_zero"),
     
     # Format output strings
     if (using_w) {
-      Total_str <- paste0(formatC(round(num_all), format = "f", digits = n_decimal), 
+      Total_str <- paste0(formatC(num_all, format = "f", digits = n_decimal),
                           " (", format(round(100 * p_all, pct_decimal), nsmall = pct_decimal), "%)")
-      Tx_str    <- paste0(formatC(round(num_tx), format = "f", digits = n_decimal), 
+      Tx_str    <- paste0(formatC(num_tx, format = "f", digits = n_decimal),
                           " (", format(round(100 * p_tx, pct_decimal), nsmall = pct_decimal), "%)")
-      Ref_str   <- paste0(formatC(round(num_ref), format = "f", digits = n_decimal), 
+      Ref_str   <- paste0(formatC(num_ref, format = "f", digits = n_decimal),
                           " (", format(round(100 * p_ref, pct_decimal), nsmall = pct_decimal), "%)")
     } else {
       Total_str <- fmt_n_pct(round(num_all), round(den_all), n_decimal, pct_decimal)

@@ -9,6 +9,7 @@
 #' @return data.frame with one row per group containing n, mean, SD, min,
 #'   quartiles, and max of the propensity score.
 #' @keywords internal
+#' @noRd
 summarize_ps_by_group <- function(ps_vals, group_vals, group_labels = NULL) {
   groups <- sort(unique(group_vals[!is.na(group_vals)]))
   result <- do.call(rbind, lapply(groups, function(g) {
@@ -44,6 +45,7 @@ summarize_ps_by_group <- function(ps_vals, group_vals, group_labels = NULL) {
 #' @return A list with elements \code{c_stat} (numeric) and \code{se} (numeric),
 #'         or NULL if survival is not available.
 #' @keywords internal
+#' @noRd
 calc_c_statistic <- function(exposure_vec, ps_vec, weights_vec = NULL, label = "PS Model",
                              verbose = TRUE) {
   if (!requireNamespace("survival", quietly = TRUE)) {
@@ -77,6 +79,7 @@ calc_c_statistic <- function(exposure_vec, ps_vec, weights_vec = NULL, label = "
 #' @return Called for its side effect (adds a sheet to \code{wb}). Returns
 #'   \code{NULL} invisibly.
 #' @keywords internal
+#' @noRd
 add_readme_sheet <- function(wb, readme_text,
                              verbose = TRUE) {
   openxlsx::addWorksheet(wb, "README")
@@ -110,6 +113,7 @@ add_readme_sheet <- function(wb, readme_text,
 #' @section Side Effects:
 #' Saves the plot to \code{output_path} via \code{ggplot2::ggsave}.
 #' @keywords internal
+#' @noRd
 create_love_plot <- function(variable_names, crude_std_diff, adjusted_std_diff,
                              crude_label, adjusted_label, title, output_path,
                              colors = NULL, shapes = NULL, use_absolute = FALSE,
@@ -213,6 +217,7 @@ create_love_plot <- function(variable_names, crude_std_diff, adjusted_std_diff,
 #' @return Invisibly \code{NULL}. Called for the PNG files written under
 #'   \code{out_dir_plots}.
 #' @keywords internal
+#' @noRd
 .plot_ps_distribution_set <- function(crude_df, weighted_df, ps_var, exposure_var,
                                       weight_var = NULL, out_dir_plots, plot_prefix,
                                       unwt_title = "Unweighted PS Distribution",
@@ -364,6 +369,7 @@ create_love_plot <- function(variable_names, crude_std_diff, adjusted_std_diff,
 #' @param threshold Numeric balance threshold on the raw scale (e.g. 0.1).
 #' @return Logical of the same length as \code{std_diff}; \code{NA} propagates.
 #' @keywords internal
+#' @noRd
 .is_balanced <- function(std_diff, threshold) {
   abs(std_diff) < threshold
 }
@@ -398,6 +404,7 @@ create_love_plot <- function(variable_names, crude_std_diff, adjusted_std_diff,
 #' @return Logical vector (length of \code{ps}); \code{TRUE} = keep. \code{NA}
 #'   propensity scores are dropped (\code{keep = FALSE}).
 #' @keywords internal
+#' @noRd
 .trim_ps <- function(ps, exp, method = c("none", "crump", "sturmer"),
                      crump_alpha = 0.1, sturmer_p = 0.05, verbose = TRUE) {
   method <- match.arg(method)
@@ -461,6 +468,7 @@ create_love_plot <- function(variable_names, crude_std_diff, adjusted_std_diff,
 #' @return A list with \code{w} (truncated weights) and \code{cut} (the applied
 #'   cut points: \code{c(lower, upper)} for percentile, or \code{c(NA, cap)} for cap).
 #' @keywords internal
+#' @noRd
 .truncate_ps_weights <- function(weights, method = c("none", "percentile", "cap"),
                                  percentile = c(0.01, 0.99), cap = NULL,
                                  verbose = TRUE) {
